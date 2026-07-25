@@ -120,7 +120,14 @@ def _save():
     tmp = IDEM_STORE.with_name(IDEM_STORE.name + ".tmp")
     try:
         blob = json.dumps({"boot": BOOT_ID, "records": _records}, indent=1)
-        tmp.write_text(blob + "\n")
+        # 0600 at create, like the auth registry — the records hold stored
+        # response bodies (worktree names, session ids, results, internal paths);
+        # `write_text` left the tmp (and, via os.replace, the live file) at the
+        # umask default 0644 in this often-synced dir. os.replace carries the
+        # 0600 tmp mode onto the live file, healing a pre-existing 0644 one.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(blob + "\n")
         os.replace(tmp, IDEM_STORE)
     except OSError as e:
         print(f"orchestra: couldn't save {IDEM_STORE.name}: {e}", file=sys.stderr)
