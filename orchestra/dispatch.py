@@ -68,7 +68,19 @@ def _append_log(**fields):
     stamp cannot be forgotten at a call site — there is no call site that
     supplies it."""
     try:
-        with open(DISPATCH_LOG, "a") as lf:
+        # 0600, like auth.audit and the device registry. A row carries the
+        # VERBATIM mission brief — prod-DB references, pasted emails, session
+        # UUIDs (ARCHITECTURE §2.1), the single most sensitive asset here — and
+        # it lives in `config.HERE`, a dir the docs note is commonly Dropbox/
+        # iCloud-synced and Time-Machined. Every sibling state file is 0600; a
+        # plain open() left this one 0644 (world-readable). os.open sets the mode
+        # at create; os.fchmod also tightens a file that predates this fix.
+        fd = os.open(DISPATCH_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "a") as lf:
             lf.write(json.dumps({**_log_stamp(), **fields}) + "\n")
     except OSError:
         pass
