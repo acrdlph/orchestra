@@ -27,12 +27,27 @@ handoff:
 - **The three "contract" calls are made:** wire idempotency (opt-in, backward-compatible), a Host
   allowlist (closes T2), and ADR-0013 ratified with the TLS-vs-plain-HTTP docs corrected. **Token
   scopes were deliberately NOT built** — see §4.3.
-- Fix commits carry a `harden:` / `ios:` prefix and a `Co-Authored-By: Claude Fable 5` trailer.
-  New regression tests live in `tests/test_fixes_*.py` and `ios/Tests/OrchestraKitTests/Fixes*Tests.swift`.
+- Fix commits carry a `harden:` / `ios:` / `fix:` prefix and a `Co-Authored-By: Claude Fable 5`
+  trailer. New regression tests live in `tests/test_fixes_*.py` and
+  `ios/Tests/OrchestraKitTests/Fixes*Tests.swift`.
+- **Since this doc was first written, three more things landed** (all on `main`): **Tier 1 #1,
+  the biometric gate, is DONE** (`b7b01e5` — Face ID / passcode gating the paired app and every
+  mutation; so §4.1 below is complete, start at §4.2); the full **iOS review pass** (all four iOS
+  HIGHs); and a live **field fix** (`1e5efe2`) — a worktree cried "needs you" while a workflow ran
+  in it, because the session driving it had no transcript (the disk was full when it tried to
+  write), so the live process was mis-paired to a done sibling. Now such a session reads `unknown`
+  (card stays `busy`, never falsely "needs you"). That incident matters to you for one reason:
 
-**Your job:** Tier 1 of `PRODUCTION-READINESS.md` (§4 below), then the medium/low tail (§5). The
-criticals and highs are done; nothing below is load-bearing for daily use, but §4.1 is the
-scariest remaining gap.
+  > **The disk filling up is the top real-world risk, and it is not yet addressed.** The
+  > transcript corpus grows ~1,000 files/day with no retention policy (the `PRODUCTION-READINESS`
+  > Tier 4 item and the §5 tail below). A full disk produces exactly the transcript-less sessions
+  > that broke the board, and it will silently break agents. A safe pruning policy for
+  > `~/.claude*/projects` is arguably higher-value than anything left in Tier 1 — consider doing
+  > it first. It needs the user's sign-off before any `rm` (their transcripts).
+
+**Your job:** Tier 1 of `PRODUCTION-READINESS.md` — **§4.1 is done, so start with §4.2 (the
+security review), then §4.3 (scopes)** — then the medium/low tail (§5). The criticals and highs
+are done; nothing below is load-bearing for daily use.
 
 ---
 
@@ -105,7 +120,13 @@ From `PRODUCTION-READINESS.md`. The server types into terminals running
 `--dangerously-skip-permissions` and dispatches agents that spend money, so this tier is small and
 high-stakes.
 
-### 4.1 Biometric gate on the app (do first — the scariest gap)
+### 4.1 Biometric gate on the app — ✅ DONE (`b7b01e5`)
+Shipped: `BiometricGate.swift` (`LAContext`, `.deviceOwnerAuthentication` so passcode is the
+fallback when no biometry is enrolled) gates the paired `TabView` in `RootView.swift` and re-locks
+on `scenePhase .background → .active`. One open policy call the user should confirm: on a device
+with **no passcode at all** it fails **open** rather than bricking the app. Original brief kept
+below for reference; nothing to do here unless that policy is revisited.
+
 Today anyone holding the **unlocked** phone can open Orchestra and drive the fleet. Add
 `LocalAuthentication`: an `LAContext` wrapper, and a gate in `ios/App/RootView.swift` (or at
 minimum in front of every *mutation* — dispatch/send/finish/resume — in the act paths). Face ID /
