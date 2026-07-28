@@ -182,6 +182,34 @@ def _pick_defaults(model=None, pick_worktree=True):
     return wt, acct
 
 
+def _resets_note(ts):
+    """', resets Thu 05:00' — or '' when the reset time is unknown."""
+    if not ts:
+        return ""
+    try:
+        return time.strftime(", resets %a %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def _headroom_detail(best, model, pinned):
+    """Why `best` cannot take the mission, naming the limit that binds — the
+    old text blamed the model cap ("the fable limit is used up") even when
+    the account's umbrella week was what ran out. A pinned refusal also drops
+    the "best is [x]" comparative: with one candidate there is nothing it
+    beat, and "no headroom on [x] — best is [x]" read as a contradiction."""
+    if best["reserve"] > 0:
+        why = f"{best['remaining']}% left, below its {best['reserve']}% reserve"
+        return f"it has {why}" if pinned else f"best is [{best['label']}] at {why}"
+    kind = "cap" if best.get("binding_scoped") else "limit"
+    cap = best.get("model_cap_left")
+    cap_note = (f"; the {model} cap itself still has {cap}% left"
+                if not best.get("binding_scoped") and cap else "")
+    used = (f"its {best['binding']} {kind} is used up ({best['remaining']}% left"
+            f"{_resets_note(best.get('binding_resets'))}{cap_note})")
+    return used if pinned else f"best is [{best['label']}] — {used}"
+
+
 _jobs = {}                 # job_id -> {progress, done, result}
 _jobs_lock = threading.Lock()
 _job_seq = [0]
@@ -217,16 +245,21 @@ def start_dispatch(mission, worktree=None, account=None,
             opus = limits.model_candidates("opus", only_account=account)
             best_opus = next((c for c in opus if c["ok"]), None)
             where = f"account [{account}]" if account else "any account"
-            if best and best["reserve"] > 0:
-                detail = (f"best is [{best['label']}] at {best['remaining']}% "
-                          f"left, below its {best['reserve']}% reserve")
-            elif best:
-                detail = (f"best is [{best['label']}] at {best['remaining']}% — "
-                          f"the {model} limit is used up")
+            if best:
+                detail = _headroom_detail(best, model, pinned=bool(account))
             else:
                 detail = "no readable account for this model"
+            msg = f"No {model} headroom on {where} — {detail}."
+            if account and best:
+                # the pinned account is spent, but the fleet may not be
+                alt = next((c for c in limits.model_candidates(model)
+                            if c["ok"]), None)
+                if alt:
+                    msg += (f" [{alt['label']}] has {alt['remaining']}% left — "
+                            "switch the account picker back to auto.")
             return {"ok": False, "needs_decision": True, "model": model,
-                    "message": f"No {model} headroom on {where} — {detail}.",
+                    "account": account or None,
+                    "message": msg,
                     "can_opus": bool(best_opus),
                     "opus_account": best_opus["label"] if best_opus else None,
                     "opus_left": best_opus["remaining"] if best_opus else None}

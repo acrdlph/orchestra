@@ -132,25 +132,29 @@ public struct DispatchRefusal: Sendable, Equatable, Decodable {
     /// This is the ONLY refusal `force_model: true` can override.
     public let needsDecision: Bool
     public let model: String?
+    /// The account the user pinned, when the refusal only examined that one —
+    /// nil on an auto-routed dispatch, where the whole fleet was checked.
+    public let account: String?
     /// Whether any account could run `opus` instead — the sheet's primary action.
     public let canOpus: Bool
     public let opusAccount: String?
     public let opusLeft: Double?
 
     public init(ok: Bool = false, message: String?, needsDecision: Bool = false,
-                model: String? = nil, canOpus: Bool = false,
+                model: String? = nil, account: String? = nil, canOpus: Bool = false,
                 opusAccount: String? = nil, opusLeft: Double? = nil) {
         self.ok = ok
         self.message = message
         self.needsDecision = needsDecision
         self.model = model
+        self.account = account
         self.canOpus = canOpus
         self.opusAccount = opusAccount
         self.opusLeft = opusLeft
     }
 
     enum CodingKeys: String, CodingKey {
-        case ok, message, model
+        case ok, message, model, account
         case needsDecision = "needs_decision"
         case canOpus = "can_opus"
         case opusAccount = "opus_account"
@@ -163,6 +167,7 @@ public struct DispatchRefusal: Sendable, Equatable, Decodable {
         message = try c.decodeIfPresent(String.self, forKey: .message)
         needsDecision = try c.decodeIfPresent(Bool.self, forKey: .needsDecision) ?? false
         model = try c.decodeIfPresent(String.self, forKey: .model)
+        account = try c.decodeIfPresent(String.self, forKey: .account)
         canOpus = try c.decodeIfPresent(Bool.self, forKey: .canOpus) ?? false
         opusAccount = try c.decodeIfPresent(String.self, forKey: .opusAccount)
         opusLeft = try c.decodeIfPresent(Double.self, forKey: .opusLeft)

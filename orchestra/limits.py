@@ -185,23 +185,30 @@ def account_reserve(label):
     return rp.get(label, rp.get("*", 0)) or 0
 
 
-def _model_remaining(acc, model):
-    """Min remaining % across the limits that running `model` consumes on this
-    account: all non-model-scoped limits (session, weekly) + the model-scoped
-    limit matching `model`, if the account has one. None if unknown."""
+def _applied_limits(acc, model):
+    """(remaining %, limit) for every limit that running `model` consumes on
+    this account: all non-model-scoped limits (session, weekly) + the
+    model-scoped limit matching `model`, if the account has one."""
     if not acc.get("ok"):
-        return None
-    rems = []
+        return []
+    out = []
     for l in acc.get("limits", []):
         rem = l.get("remaining_percent")
         if rem is None:
             rem = 100 - (l.get("percent") or 0)
         if l.get("model_scoped"):
             if model and model.lower() in (l.get("label", "").lower()):
-                rems.append(rem)     # this model's own cap
+                out.append((rem, l))     # this model's own cap
         else:
-            rems.append(rem)         # session / weekly always apply
-    return min(rems) if rems else None
+            out.append((rem, l))         # session / weekly always apply
+    return out
+
+
+def _model_remaining(acc, model):
+    """Min remaining % across the limits that running `model` consumes on this
+    account. None if unknown."""
+    applied = _applied_limits(acc, model)
+    return min(r for r, _ in applied) if applied else None
 
 
 def model_candidates(model, only_account=None):
@@ -221,12 +228,20 @@ def model_candidates(model, only_account=None):
                 continue
         elif label in excl:
             continue
-        rem = _model_remaining(acc, model)
-        if rem is None:
+        applied = _applied_limits(acc, model)
+        if not applied:
             continue
+        # the binding limit — the one with the least left — so a refusal can
+        # blame the right one: the umbrella week, not necessarily the model cap
+        rem, bind = min(applied, key=lambda t: t[0])
         reserve = account_reserve(label)
         out.append({"label": label, "remaining": round(rem),
-                    "reserve": reserve, "ok": rem > 0 and rem >= reserve})
+                    "reserve": reserve, "ok": rem > 0 and rem >= reserve,
+                    "binding": bind.get("label") or bind.get("group") or "account",
+                    "binding_scoped": bool(bind.get("model_scoped")),
+                    "binding_resets": bind.get("resets_at"),
+                    "model_cap_left": next((round(r) for r, l in applied
+                                            if l.get("model_scoped")), None)})
     out.sort(key=lambda x: -x["remaining"])
     return out
 

@@ -363,7 +363,8 @@ struct ForceModelSheet: View {
                         useOpus()
                     }
                 } else {
-                    Text("No account has opus headroom either.")
+                    Text(refusal.account.map { "[\($0)] has no opus headroom either." }
+                         ?? "No account has opus headroom either.")
                         .font(OrcFont.bodyCompact)
                         .foregroundStyle(Palette.textTertiary)
                 }

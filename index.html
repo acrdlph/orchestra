@@ -1144,8 +1144,8 @@ function acctOptions() {
       const r = acctWeekly(a, model);
       let t = acctLabel(a.config_dir);
       if (r.wk != null) {
-        t += ` · wk ${Math.round(r.wk)}%${r.capped ? ` (${model} cap)` : ""}`;
-        if (r.sess != null && r.sess < r.wk) t += ` · sess ${Math.round(r.sess)}%`;
+        t += ` · wk ${Math.round(r.wk)}% left${r.capped ? ` (${model} cap)` : ""}`;
+        if (r.sess != null && r.sess < r.wk) t += ` · sess ${Math.round(r.sess)}% left`;
       } else t += ` · ${Math.round(a.headroom_percent ?? 0)}% left`;
       return { v: acctLabel(a.config_dir), t };
     })];
@@ -1327,7 +1327,9 @@ async function launchMission(missionArg) {
 function showModelDecision(resp) {
   const opusBtn = resp.can_opus
     ? `<button class="send" onclick="relaunch('opus', false)">▶ start with Opus${resp.opus_account ? ` — [${esc(resp.opus_account)}] ${resp.opus_left}% left` : ""}</button>`
-    : `<span class="dnote">no account has Opus headroom either</span>`;
+    : `<span class="dnote">${resp.account
+        ? `[${esc(resp.account)}] has no Opus headroom either`
+        : "no account has Opus headroom either"}</span>`;
   $("mStatus").innerHTML = `<div class="proglive" style="border-color:var(--yellow);box-shadow:0 0 0 1px rgba(212,176,106,.25)">
     <div class="progline">⚠ ${esc(resp.message)}</div>
     <div class="progline sub">${esc(resp.model)} would run into a limit / reserve. choose:</div>
