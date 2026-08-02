@@ -274,6 +274,47 @@ class TestDelegatedShelfLife(_ScanRig):
         self.assertEqual(s["pending_workflows"], 0)
         self.assertEqual(s["pending_bg_agents"], 0)
 
+    def test_stale_count_survives_while_subagents_write(self):
+        # a dynamic workflow longer than `delegated_s` writes only under
+        # <session-id>/ — no new turn_duration ever restamps the count. The
+        # fresh sidechain write IS the delegation's liveness, so the count
+        # rides `max(deleg_at, sub_mtime)` and the session stays ● WORKING
+        # instead of decaying to a "needs you" card mid-workflow.
+        stale = config.CFG["delegated_s"] + 120
+        self._session([
+            {"type": "user", "cwd": str(self.wt), "message": {"content": "delegate"}},
+            {"type": "assistant", "cwd": str(self.wt),
+             "message": {"content": [{"type": "text", "text": "on it"}]}},
+            self._turn_end(ago_s=stale, wf=1),
+        ])
+        sub = self._proj() / "sess0001" / "subagents" / "workflows" / "wf_1"
+        _write(sub / "agent-a1.jsonl", [
+            {"type": "assistant",
+             "message": {"content": [{"type": "text", "text": "working"}]}}])
+        s = self._scan()[str(self.wt)][0]
+        self.assertEqual(s["pending_workflows"], 1)
+
+    def test_stale_count_with_stale_subagent_tree_still_ages_out(self):
+        # the failure the shelf life exists for: the workflow was killed, so
+        # its sidechain stopped moving too. A tree as stale as the stamp must
+        # not resurrect the count.
+        import os
+        stale = config.CFG["delegated_s"] + 120
+        self._session([
+            {"type": "user", "cwd": str(self.wt), "message": {"content": "delegate"}},
+            {"type": "assistant", "cwd": str(self.wt),
+             "message": {"content": [{"type": "text", "text": "on it"}]}},
+            self._turn_end(ago_s=stale, wf=1),
+        ])
+        sub = self._proj() / "sess0001" / "subagents" / "workflows" / "wf_1"
+        _write(sub / "agent-a1.jsonl", [
+            {"type": "assistant",
+             "message": {"content": [{"type": "text", "text": "died here"}]}}])
+        then = time.time() - stale
+        os.utime(sub / "agent-a1.jsonl", (then, then))
+        s = self._scan()[str(self.wt)][0]
+        self.assertEqual(s["pending_workflows"], 0)
+
     def test_undated_count_degrades_to_unbounded_trust(self):
         # an undated turn_duration cannot be aged; it keeps the prior behaviour
         # rather than silently dropping a live delegation (older CLIs / the

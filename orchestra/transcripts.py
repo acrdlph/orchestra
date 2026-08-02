@@ -1022,9 +1022,25 @@ def scan_sessions(worktrees, all_procs, now, cold=False, hooks=None):
                 # `pending_bg_tools` below. An UNDATED turn_duration cannot be
                 # aged and degrades to the prior unbounded trust rather than
                 # silently dropping a live delegation.
+                #
+                # Aged against the FRESHEST EVIDENCE OF THE DELEGATION, not the
+                # turn stamp alone. A dynamic workflow writes only under
+                # <session-id>/ — the main transcript gets no new turn_duration
+                # until the workflow finishes — so a workflow longer than
+                # `delegated_s` outlived its own stamp and the session decayed
+                # WAITING → card "attention": the board summoned the user to a
+                # session mid-workflow. `sub_mtime` is that evidence, already in
+                # hand above: a live workflow keeps writing and keeps its count
+                # alive; a killed one stops, and the count still expires
+                # `delegated_s` after its LAST write, which is the failure the
+                # shelf life exists to catch. (`pending_bg_tools` below stays on
+                # the raw launch epochs: a backgrounded Bash never writes under
+                # <session-id>/, so `sub_mtime` is not evidence about it, and an
+                # unrelated subagent must not keep a dead launch alive.)
                 deleg_at = tail["delegated_at"]
                 deleg_live = (deleg_at is None
-                              or now - deleg_at <= config.CFG["delegated_s"])
+                              or now - max(deleg_at, sub_mtime)
+                              <= config.CFG["delegated_s"])
                 pend_wf = tail["pending_workflows"] if deleg_live else 0
                 pend_bg = tail["pending_bg_agents"] if deleg_live else 0
                 by_wt[wt].append({
