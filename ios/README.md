@@ -106,6 +106,7 @@ ios/
 ├── Orchestra-Info.plist       ATS, camera, URL scheme
 ├── Orchestra.entitlements     keychain access — see "the second-launch bug"
 ├── App/                       composition + the two views that need UIKit
+│   └── Fonts/                 IBM Plex Mono ×4 + OFL.txt — see below
 └── Sources/Orchestra/
     ├── Model/    Wire · Enums · StreamFrame · Chat · Limits · Pairing
     ├── API/      OrchestraClient (actor) · EventStream · SSE · Endpoint
@@ -118,6 +119,34 @@ ios/
                   FleetView · WorktreeDetailView · ChatView · LimitsView
                   ServerView · rows
 ```
+
+**IBM Plex Mono is bundled now** — the brand face of the desktop board, not SF
+Mono approximating it. **Four `.ttf`s and no more.** `UI/Typography.swift`
+resolves the mono half of the ramp from `\.legibilityWeight`, so Regular and
+SemiBold carry normal legibility and Medium and Bold carry the system Bold Text
+setting — which `Font.custom(_:size:relativeTo:)` does not honour on its own, and
+without which the machine voice would stay thin while the human voice went bold.
+That mapping is the only reason four faces ship instead of two; no italic, and
+none of Plex's other six weights, because each unused face is ~170 KB of download
+nothing renders. Every token still passes `relativeTo:` with the default point
+size of the text style it already used, so Dynamic Type is unchanged and so is
+the size at every step. **`App/Fonts/` needs no `.pbxproj` edit** — `App/` is a
+file-system-synchronised group, the copy phase flattens the folder, `UIAppFonts`
+therefore lists bare basenames, and `OFL.txt` ships beside the faces because the
+SIL Open Font License requires the licence to travel with the font.
+
+**Two silent-failure modes are guarded rather than hoped about** (`UX.md` §9.4).
+`Font.custom` with a name nothing resolves does not throw and does not draw tofu
+— it substitutes, invisibly. So: the PostScript names are read off the shipped
+files and two of the four are *abbreviated* (`IBMPlexMono-Medm`,
+`IBMPlexMono-SmBld`, and Regular is bare `IBMPlexMono`), and `OrcFont.plexIsAvailable`
+resolves all four through `UIFont(name:)` at launch — `assertionFailure` in
+DEBUG, and in Release the **whole** ramp falls back to the system monospaced
+design, never per glyph. And Plex Mono has no Greek block at all, so §9.4's claim
+that `Δ` U+0394 is "covered" is simply wrong: the dirty badge now draws `∆`
+U+2206 (same shape, actually present) and the close button an SF Symbol instead
+of `✕` U+2715. `FontBundleTests` re-checks the filenames, the PostScript names
+and the glyph coverage of every mark drawn in mono on every `swift test`.
 
 **The receive path, end to end.** `OrchestraClient.openEvents` opens the socket
 and hands `Data` chunks to `SSELineSplitter` → `SSEDecoder` → `StreamFrame` →
@@ -536,9 +565,10 @@ in the UI is now `Text(verbatim:)`.
   ternary at any call site, so Contrast+ cannot be applied 60 %). A catalog is
   still the better home because it reaches widgets and notification content,
   which render out of process.
-- **IBM Plex Mono.** The system monospaced face is used instead, which honours
-  Bold Text and cannot fall back per-glyph — the silent failure UX.md §9.4 spends
-  a page on. Bundling Plex changes no call site.
+- ~~**IBM Plex Mono.**~~ **Done** — four faces bundled in `App/Fonts/`, Bold Text
+  resolved from `\.legibilityWeight`, and the per-glyph failure §9.4 warns about
+  closed by a whole-face guard and a coverage test. See "Shape". No call site
+  changed, exactly as this entry predicted.
 - **A device build.** Simulator only. A real device needs a team in a gitignored
   `Signing.xcconfig`; that is the one thing here that needs the paid account.
 

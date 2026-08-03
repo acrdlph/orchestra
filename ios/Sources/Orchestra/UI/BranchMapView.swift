@@ -251,7 +251,7 @@ struct MapRowView: View {
                 .foregroundStyle(Palette.textSecondary)
                 .lineLimit(2)
 
-            // Line 3 — branch · +ahead · Δdirty
+            // Line 3 — branch · +ahead · ∆dirty
             HStack(spacing: Space.sm) {
                 if branch.isDetached {
                     Label("detached · \(branch.ahead) unmerged", systemImage: "exclamationmark.triangle")
@@ -271,7 +271,7 @@ struct MapRowView: View {
                         .foregroundStyle(Palette.textTertiary)
                 }
                 if branch.dirty > 0 {
-                    Text(verbatim: "Δ\(branch.dirty)")
+                    Text(verbatim: "∆\(branch.dirty)")
                         .font(OrcFont.meta)
                         .foregroundStyle(Palette.statusLimit)
                 }

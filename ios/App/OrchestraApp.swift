@@ -22,6 +22,12 @@ struct OrchestraApp: App {
                 .preferredColorScheme(.dark)
                 .accessibilityIgnoresInvertColors(true)
                 .task {
+                    // Resolve the bundled faces before the first label draws.
+                    // `plexIsAvailable` is lazy, so touching it here is what
+                    // turns a missing .ttf into a DEBUG trap at launch instead
+                    // of a Release build that quietly draws in SF Mono. See
+                    // `UI/Typography.swift` and `UX.md` §9.4.
+                    _ = OrcFont.plexIsAvailable
                     // Wire the delegate to the model's controller before start:
                     // a token buffered by the delegate replays the instant this
                     // runs, and start() may itself register for one.

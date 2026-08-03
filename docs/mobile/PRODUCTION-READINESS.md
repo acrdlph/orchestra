@@ -45,8 +45,15 @@ that spend money. That raises the bar for everything that can reach it.
    and the way brand colours reach out-of-process surfaces (widgets, notification content).
 6. **iOS CI.** The python suite runs in CI; the app does not. Add `xcodebuild build` + `swift
    test` on push, so a Swift regression is caught like a python one.
-7. **Bundle IBM Plex Mono.** The app uses the system SF Mono, not the brand face — cosmetic, but
-   it is the difference between "looks like orchestra" and "looks close".
+7. ~~**Bundle IBM Plex Mono.**~~ **Done.** Four faces (Regular / Medium / SemiBold / Bold, ~680 KB)
+   ship in `ios/App/Fonts/` with `OFL.txt`; `UI/Typography.swift` resolves them from
+   `\.legibilityWeight`, so Bold Text moves the machine voice a weight instead of leaving it thin.
+   No call site changed. `Font.custom` substitutes silently for a face that will not resolve, so
+   the app checks all four with `UIFont(name:)` at launch — `assertionFailure` in DEBUG, and in
+   Release the whole ramp (never a single glyph) falls back to the system monospaced design.
+   Two marks moved because Plex has no glyph for them: `Δ` U+0394 → `∆` U+2206, `✕` U+2715 → the
+   `xmark` SF Symbol. Verified by looking at the pairing screen, the live board and the server
+   screen on an iPhone 17 Pro Max simulator, plus `FontBundleTests` on every `swift test`.
 
 ## Tier 3 — The phone superpowers (specced in UX.md, not built)
 

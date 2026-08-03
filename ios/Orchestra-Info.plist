@@ -35,6 +35,34 @@
 	</array>
 
 	<!--
+	  IBM Plex Mono — the machine voice of the board, bundled rather than
+	  approximated with SF Mono. FOUR faces and no more: `UX.md` §9.3 resolves
+	  the mono ramp from `\.legibilityWeight`, so Regular/SemiBold carry normal
+	  legibility and Medium/Bold carry the system Bold Text setting. No italic —
+	  neither the app nor the desktop CSS ever asks for one — and none of the
+	  other six Plex weights, because each unused `.ttf` is ~170 KB of download
+	  nothing renders.
+
+	  These are FILENAMES. What `UIFont(name:)` and `Font.custom` want is the
+	  PostScript name, and for two of these four it is NOT the filename:
+	  `IBMPlexMono-Medm` and `IBMPlexMono-SmBld`. `UI/Typography.swift` holds
+	  those, and a mismatch substitutes silently rather than failing.
+
+	  The `.ttf`s and `OFL.txt` live in `App/Fonts/`, which is inside a
+	  file-system-synchronised group — no `.pbxproj` edit registers them, and the
+	  copy phase flattens the folder, so the paths here are bare basenames.
+	  `OFL.txt` ships in the bundle beside them because the SIL Open Font
+	  License requires the licence to travel with the font.
+	-->
+	<key>UIAppFonts</key>
+	<array>
+		<string>IBMPlexMono-Regular.ttf</string>
+		<string>IBMPlexMono-Medium.ttf</string>
+		<string>IBMPlexMono-SemiBold.ttf</string>
+		<string>IBMPlexMono-Bold.ttf</string>
+	</array>
+
+	<!--
 	  `remote-notification` so a `content-available: 1` push (every one
 	  `notify.compose` sends sets it) can wake the app to refresh its cached
 	  board while backgrounded. It is the only background mode this app claims;

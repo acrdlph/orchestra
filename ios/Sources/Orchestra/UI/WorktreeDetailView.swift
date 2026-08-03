@@ -144,7 +144,13 @@ public struct WorktreeDetailView: View {
                    + "verifies the landing and closes the terminal.")
                 .font(OrcFont.meta)
                 .foregroundStyle(Palette.textTertiary)
-            PrimaryAction(pending ? "✕ Close this worktree" : "✓ Finish this worktree",
+            // The mark is an SF Symbol, not a codepoint in the label. `✕` U+2715
+            // is not in IBM Plex Mono, and a button label is `OrcFont.button` —
+            // so the literal form fell back per glyph to a proportional face
+            // inside a mono word, which is the exact silent failure `UX.md` §9.4
+            // spends a page on. `FinishSheet` already draws its twin this way.
+            PrimaryAction(pending ? "Close this worktree" : "Finish this worktree",
+                          symbol: pending ? "xmark" : "checkmark",
                           tint: pending ? Palette.statusNeeds : Palette.statusLimit,
                           enabled: !actions.isBusy(.finish(worktree: name), now: now)) {
                 finishing = true
@@ -202,7 +208,7 @@ public struct WorktreeDetailView: View {
     /// What the server would refuse on, recomputed from the card. It is the same
     /// two facts `start_finish` checks: the tree and the landing.
     private func closeoutBlocker(_ card: Worktree) -> String? {
-        if card.git.dirty > 0 { return "can't close yet — Δ\(card.git.dirty) uncommitted file(s)" }
+        if card.git.dirty > 0 { return "can't close yet — ∆\(card.git.dirty) uncommitted file(s)" }
         if let ahead = card.git.ahead, ahead > 0 {
             return "can't close yet — ↑\(ahead) not yet on the trunk"
         }
@@ -220,7 +226,7 @@ public struct WorktreeDetailView: View {
                 .textSelection(.enabled)
             HStack(spacing: Space.md) {
                 if card.git.dirty > 0 {
-                    Text(verbatim: "Δ\(card.git.dirty) uncommitted")
+                    Text(verbatim: "∆\(card.git.dirty) uncommitted")
                         .foregroundStyle(Palette.statusLimit)
                 }
                 // Omitted ENTIRELY with no upstream — `ahead` is null, not zero,

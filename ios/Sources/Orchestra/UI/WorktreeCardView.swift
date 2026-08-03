@@ -92,8 +92,8 @@ struct WorktreeCardView: View {
     ///
     /// `Text("\(n)")` takes the `LocalizedStringKey` overload, which formats the
     /// interpolated integer through the locale — so pid **34115** renders as
-    /// **`34.115`** on a device set to a European locale, and `Δ998` becomes
-    /// `Δ1.203` the moment a worktree gets past a thousand dirty files. Caught in
+    /// **`34.115`** on a device set to a European locale, and `∆998` becomes
+    /// `∆1.203` the moment a worktree gets past a thousand dirty files. Caught in
     /// the first screenshot of the real fleet: every pid in OTHER AGENTS had a
     /// decimal point in it. A pid is an identifier, not a quantity, and neither
     /// is a commit count or a dirty count in a mono column.
@@ -105,7 +105,7 @@ struct WorktreeCardView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             if card.git.dirty > 0 {
-                Text(verbatim: "Δ\(card.git.dirty)")
+                Text(verbatim: "∆\(card.git.dirty)")
                     .font(OrcFont.meta)
                     .foregroundStyle(Palette.statusLimit)
                     .accessibilityLabel("\(card.git.dirty) uncommitted")
