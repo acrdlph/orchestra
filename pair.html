@@ -258,6 +258,14 @@ async function poll() {
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// A value dropped into a JS string inside an inline handler needs the JS-string
+// layer too: esc() alone turns ' into &#39;, which the HTML parser decodes back
+// to ' before the onclick body is compiled — so an apostrophe (or the &#39; a
+// crafted device LABEL carries) breaks out of the quotes. JSON.stringify does
+// the JS escaping and supplies the quotes; esc() then makes it attribute-safe.
+// Call it WITHOUT wrapping quotes: revoke(${escArg(id)}). Mirrors index.html.
+const escArg = s => esc(JSON.stringify(String(s == null ? "" : s)));
+
 const ago = t => {
   if (!t) return "never";
   const s = Math.max(0, Date.now() / 1000 - t);
@@ -284,8 +292,8 @@ function render(devices) {
       "<td>" + ago(d.last_seen) + "</td>" +
       "<td>" + ago(d.created) + "</td>" +
       "<td>" + (revoked ? "" :
-        '<button class="danger" onclick="revoke(\'' + esc(d.id) + "','" +
-        esc(d.label).replace(/'/g, "\\'") + '\')">revoke</button>') + "</td>" +
+        '<button class="danger" onclick="revoke(' + escArg(d.id) + "," +
+        escArg(d.label) + ')">revoke</button>') + "</td>" +
       "</tr>";
   }).join("");
   $("devices").innerHTML =

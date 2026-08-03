@@ -159,6 +159,10 @@ button:disabled { opacity:.5; cursor:wait; }
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// JS-string layer for a value inside an inline handler: esc() alone leaves &#39;
+// which the parser decodes to ' and breaks out of the onclick quotes. Emits its
+// own quotes — call as setReserve(${escArg(x)}). Mirrors index.html/pair.html.
+const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
 // The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
 // the server's layer is opt-in per request, so a mutation without these headers
 // is a mutation a retry can run twice. Minted PER TAP, never from the payload;
@@ -241,7 +245,7 @@ function render(d) {
       <div class="reserveline">
         <span>reserve buffer</span>
         <input type="number" min="0" max="95" step="5" value="${rsv}"
-          onchange="setReserve('${esc(a.fb_label || a.slug)}', this.value)" title="headroom % kept free from auto-dispatch">
+          onchange="setReserve(${escArg(a.fb_label || a.slug)}, this.value)" title="headroom % kept free from auto-dispatch">
         <span class="pct">%</span>
         <span class="rsub">${rsv ? "auto-dispatch stops at " + (100 - rsv) + "% of the weekly limit" : "auto-dispatch may use the full weekly limit"}</span>
       </div>

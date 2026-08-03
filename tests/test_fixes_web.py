@@ -31,12 +31,17 @@ ROOT = Path(__file__).resolve().parent.parent
 INDEX = ROOT / "index.html"
 MAP = ROOT / "map.html"
 LIMITS = ROOT / "limits.html"
+PAIR = ROOT / "pair.html"
+GUIDE = ROOT / "guide.html"
 NODE = shutil.which("node")
 
 
 def _extract_const(src, name):
-    """Pull a `const <name> = ...;` one-liner out of the page, verbatim."""
-    m = re.search(r"^const %s = .*;$" % re.escape(name), src, re.MULTILINE)
+    """Pull a `const <name> = ... ;` declaration out of the page, verbatim —
+    one line or several (pair.html wraps `esc` across two), up to the first
+    line-terminating semicolon."""
+    m = re.search(r"^const %s = .*?;$" % re.escape(name), src,
+                  re.MULTILINE | re.DOTALL)
     if not m:
         raise AssertionError("could not find `const %s` in the page" % name)
     return m.group(0)
@@ -152,6 +157,49 @@ class JsStringEscaping(unittest.TestCase):
         mp = MAP.read_text()
         self.assertNotIn("tipFocus('${esc(b.worktree)}')", mp)
         self.assertNotIn("tipFinish(this, '${esc(b.worktree)}')", mp)
+
+    def test_pair_revoke_handler_is_injection_safe(self):
+        # C1: the device LABEL is attacker-chosen (pairing body) and lands in a
+        # revoke() onclick. A quote-breakout must arrive as data, never execute.
+        payload = "x');globalThis.__inject();('"
+        received, injected = self._run(PAIR, "escArg(NAME)", payload)
+        self.assertEqual(received, payload)
+        self.assertFalse(injected)
+
+    def test_limits_reserve_handler_is_injection_safe(self):
+        # C1: the account label (a ~/.claude-<label> basename) lands in a
+        # setReserve() onchange.
+        payload = "x');globalThis.__inject();('"
+        received, injected = self._run(LIMITS, "escArg(NAME)", payload)
+        self.assertEqual(received, payload)
+        self.assertFalse(injected)
+
+
+class NoHandlerSingleQuotesEscacrossPages(unittest.TestCase):
+    """C1 — the shape that survived four escaping passes: a value dropped into an
+    inline handler as `'${esc(x)}'`. esc() leaves `&#39;` for an apostrophe,
+    which the attribute decode turns back into `'` and the JS parser reads as a
+    string terminator. No page may carry it; escArg (own quotes, then esc) is the
+    only safe interpolation into a handler."""
+
+    # on<event>="...  '${  ...(any esc/raw expr)...  }..."  — the single quote
+    # immediately before an interpolation inside a double-quoted handler.
+    BAD = re.compile(r"""on[a-z]+\s*=\s*"[^"]*'\$\{""")
+
+    def test_no_page_interpolates_a_value_into_a_single_quoted_handler_arg(self):
+        for name in ("index.html", "map.html", "limits.html", "pair.html",
+                     "guide.html"):
+            src = (ROOT / name).read_text()
+            hits = self.BAD.findall(src)
+            self.assertEqual(hits, [], f"{name} still has a single-quoted "
+                             f"handler interpolation (C1): {hits}")
+
+    def test_every_page_that_needs_escarg_defines_it(self):
+        # pair.html and limits.html shipped without escArg — the reason C1 was
+        # unfixable there. Every page that has an inline handler must carry it.
+        for name in ("index.html", "map.html", "limits.html", "pair.html"):
+            src = (ROOT / name).read_text()
+            self.assertIn("escArg", src, f"{name} must define escArg")
 
 
 @unittest.skipUnless(NODE, "node not available")

@@ -1157,6 +1157,44 @@ class TestFindingTheTailnet(unittest.TestCase):
             fb.tailnet.from_cli, fb.tailnet.from_interfaces = saved
 
 
+class TestTheLabelFilter(PairCase):
+    """The device label is the one attacker-chosen string that reaches
+    devices.json and the /pair page. escArg on the page is the primary defence
+    (proven in tests/test_fixes_web.py); this boundary filter is defence in
+    depth against a future unescaped sink, stripping only structure a name never
+    carries — `< > \\ \\`` and control characters — and keeping quotes/`&`, which
+    real names contain and the render layer already handles (C1)."""
+
+    def test_tag_forming_characters_are_stripped(self):
+        _, code = self.open()
+        ok, err = self.claim(code, label="<img src=x onerror=alert(1)>")
+        self.assertIsNone(err)
+        self.assertNotIn("<", ok["label"])
+        self.assertNotIn(">", ok["label"])
+        # the readable core survives — a filter, not a rejection
+        self.assertIn("img", ok["label"])
+
+    def test_js_string_metacharacters_are_stripped(self):
+        _, code = self.open()
+        ok, _ = self.claim(code, label="a\\b`c`d")
+        self.assertNotIn("\\", ok["label"])
+        self.assertNotIn("`", ok["label"])
+
+    def test_control_characters_are_dropped(self):
+        _, code = self.open()
+        ok, _ = self.claim(code, label="tab\there\nnewline\x1b[2J")
+        self.assertNotIn("\n", ok["label"])
+        self.assertNotIn("\t", ok["label"])
+        self.assertNotIn("\x1b", ok["label"])
+
+    def test_a_real_name_with_an_apostrophe_and_ampersand_round_trips(self):
+        # the identity rule: the label you sent is the label you revoke. Quotes
+        # and & are the render layer's job, not this filter's.
+        _, code = self.open()
+        ok, _ = self.claim(code, label="Achill's AT&T iPhone")
+        self.assertEqual(ok["label"], "Achill's AT&T iPhone")
+
+
 class TestTheAdvertisedHost(PairCase):
     """A tailnet IP is upgraded to the MagicDNS name everywhere the phone
     looks — QR, manual fields, and the claim's server facts — because the App

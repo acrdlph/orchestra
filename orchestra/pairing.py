@@ -323,8 +323,8 @@ def claim(peer, body, now=None):
         return None, (400, BAD_REQUEST, "the body of a pairing request must be "
                                         "a JSON object")
     presented = normalise(body.get("code"))
-    label = str(body.get("label") or "")[:LABEL_MAX].strip()
-    platform = str(body.get("platform") or "")[:PLATFORM_MAX].strip()
+    label = _clean_label(str(body.get("label") or "")[:LABEL_MAX].strip())
+    platform = _clean_label(str(body.get("platform") or "")[:PLATFORM_MAX].strip())
 
     with _lock:
         w = _window
@@ -388,6 +388,26 @@ def claim(peer, body, now=None):
         "token": token,
         "server": _server_facts(),
     }, None
+
+
+# The label is the ONE piece of attacker-chosen text that survives into
+# `devices.json` and is rendered by the board's `/pair` page. The page's own
+# `escArg`/`esc` is the primary defence and correctly handles quotes,
+# apostrophes and `&` — so those STAY, because they appear in real device names
+# ("Achill's iPhone", "AT&T iPhone") and the identity rule is that the label you
+# sent is the label you revoke. What is stripped here, as defence in depth
+# against a future sink that forgets to escape, is the subset that can only ever
+# be structure and never a name: the tag-forming `< >`, the JS-string
+# metacharacters backslash and backtick, and every control character (a newline
+# that forges a `--list-devices` row, an ESC that a terminal would act on).
+_LABEL_BAN = str.maketrans({c: None for c in "<>\\`"})
+
+
+def _clean_label(text):
+    """Drop the structural characters a device label never legitimately carries,
+    and any control character. Quotes and `&` are left to the render layer."""
+    text = text.translate(_LABEL_BAN)
+    return "".join(ch for ch in text if ch >= " " and ch != "\x7f").strip()
 
 
 def _default_label(platform, peer):
