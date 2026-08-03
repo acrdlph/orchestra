@@ -240,6 +240,8 @@ python3 -m orchestra [--root DIR]... [--pattern REGEX] [--home DIR]...
 | `--revoke-device ID` | — | kill a token immediately, no restart needed — then exit |
 | `--window-h H` | 48 | ignore transcripts idle longer than this many hours |
 | `--idle-s S` | 30.0 | seconds between **safety-net** sweeps; changes arrive as events (see below) |
+| `--disk-report` | — | print what the transcript corpus costs (read-only) — then exit |
+| `--prune-logs` | — | rotate/reap **orchestra's own** logs; never touches `~/.claude*` — then exit |
 | `--demo` | — | fictional data (screenshots, kicking the tires) |
 
 Persistent settings go in `orchestra.config.json` next to the script
@@ -303,6 +305,12 @@ provider token with `403 InvalidProviderToken`.
 | `watch_min_interval_s` | `1.0` | floor between event-driven sweeps (the rate limit; see below) |
 | `watch_max_window_s` | `2.0` | never defer a nudge longer than this, however busy the writer |
 | `watch_rebuild_s` | `30.0` | re-enumerate the watch set on this clock, as well as on every change |
+| **disk** | | *the board reports what your transcripts cost; it never deletes them — see below* |
+| `disk_report_h` | `6.0` | hours between corpus reports; `0` turns the thread off |
+| `disk_warn_gb` | `10.0` | warn once `~/.claude*/projects` is bigger than this |
+| `disk_free_gb` | `10.0` | …or once the filesystem holding it has less than this free |
+| `log_max_mb` | `8.0` | rotate **orchestra's own** `audit.log.jsonl` / `dispatch.log.jsonl` past this |
+| `log_keep` | `5` | rotated segments kept — but a segment under **7 days** old is never removed, whatever this says |
 
 **How the board notices (macOS).** It does not go looking. A kqueue watcher
 holds a deliberately bounded set of file descriptors — the project directories
@@ -403,6 +411,50 @@ after its suffix (`~/.claude-work` → `work`, bare `~/.claude` → `main`).
 Non-standard locations: `--home DIR`, the config file's `"homes"`, or a
 colon-separated `CLAUDE_CONFIG_DIRS`. See the cclimits README for setting up
 accounts via `CLAUDE_CONFIG_DIR`.
+
+### Disk — orchestra reports, you decide
+
+Your transcripts are the biggest thing on this machine that this program
+touches, and **orchestra never deletes any of them.** There is no backup job
+and no derived copy: `transcripts.py` opens `~/.claude*/projects` read-only,
+reads a bounded tail, and writes nothing. Retention there is yours.
+
+What it does instead is tell you what it costs, every `disk_report_h` hours and
+once at startup, on stderr (`/tmp/orchestra.log` under `./start.sh`) — or on
+demand, which is read-only and safe to run any time:
+
+```bash
+python3 -m orchestra --disk-report
+# orchestra: transcript corpus 4.9 GB in 35,373 files across 7 Claude home(s);
+#            oldest write 193 days ago; 13.4 GB free on that filesystem.
+```
+
+Past `disk_warn_gb`, or under `disk_free_gb` free, it also names the oldest file
+and how to list the old ones. **This matters more than it sounds:** a full disk
+does not slow the board down, it stops an agent writing its `.jsonl` at all —
+and a session with no transcript is one the board cannot read. That is a real
+incident here, not a hypothetical (a busy worktree cried "needs you" because of
+it). To reclaim space, look first, then delete what you recognise:
+
+```bash
+find ~/.claude*/projects -name '*.jsonl' -mtime +90 -print
+```
+
+The two append-only files orchestra writes **itself** — `audit.log.jsonl` and
+`dispatch.log.jsonl` — are the only files it will ever remove, and only these:
+
+```bash
+python3 -m orchestra --prune-logs
+```
+
+They rotate past `log_max_mb` into a stamped segment beside them
+(`audit.log.jsonl.20260804T005712`), `log_keep` segments survive, and every
+batch that removes something writes a `disk_prune` line into the audit log with
+the count and the bytes freed. **A segment less than 7 days old is never
+removed, whatever `log_keep` says** — the week just gone is when somebody
+investigating a stolen token goes looking, and that floor is not a config key.
+Both readers (`/api/dispatchlog`, `read_audit`) stitch across the boundary, so a
+rotation never looks like a wiped history.
 
 ---
 

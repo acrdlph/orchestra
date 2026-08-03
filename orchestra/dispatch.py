@@ -36,7 +36,7 @@ import shlex
 import threading
 import time
 
-from . import config, shell, gitrepo, hooks, transcripts, limits, observer
+from . import config, shell, gitrepo, hooks, transcripts, limits, observer, disk
 
 
 # --------------------------------------------------------------- dispatch
@@ -67,6 +67,12 @@ def _append_log(**fields):
     shipping rows a client cannot place in time. Going through here means the
     stamp cannot be forgotten at a call site — there is no call site that
     supplies it."""
+    # Before the append, so the cap is a cap and not a suggestion. Unlike
+    # `auth.audit` this one DOES let `disk` write the marker — the marker goes
+    # to the audit log, this function holds no lock of auth's, and a synthetic
+    # row in here would come back out of `read_dispatch_log` as an entry with
+    # no session for the board to render.
+    disk.rotate_if_needed(DISPATCH_LOG)
     try:
         # 0600, like auth.audit and the device registry. A row carries the
         # VERBATIM mission brief — prod-DB references, pasted emails, session
@@ -89,16 +95,17 @@ def _append_log(**fields):
 def read_dispatch_log(limit=25):
     """Recent dispatches, newest first, each annotated with whether its tmux
     session is still alive."""
-    if not DISPATCH_LOG.exists():
-        return {"entries": []}
     rows = []
-    try:
-        for line in DISPATCH_LOG.read_text().splitlines():
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                continue
-    except OSError:
+    # Across rotated segments, so the newest 25 stay the newest 25 through a
+    # rotation instead of resetting to whatever landed since. It also stops
+    # reading an unbounded file to show 25 rows — the live one is capped at
+    # `log_max_mb` now, and only as many segments as the tail needs are opened.
+    for line in disk.tail_lines(DISPATCH_LOG, limit):
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    if not rows:
         return {"entries": []}
     live = set()
     rc, out = shell.run(["tmux", "-L", FLEET_SOCK, "list-sessions", "-F", "#{session_name}"])

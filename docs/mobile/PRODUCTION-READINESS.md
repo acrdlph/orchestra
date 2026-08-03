@@ -60,8 +60,18 @@ that spend money. That raises the bar for everything that can reach it.
 11. **`resumes` don't ride the stream.** They live in `resume.py`, which the observer doesn't
     watch, so a stream-only client (the phone) learns about auto-resume changes via a side poll,
     not the delta stream. Fine today; name it before it surprises someone.
-12. **Transcript-corpus retention.** Orchestra's own inputs grow ~1,000 files/day (~5 GB now).
-    There's a backup job; there is no pruning. A disk on a laptop is finite.
+12. **Transcript-corpus retention.** ~~There's a backup job; there is no pruning.~~ **Half done,
+    and the other half is not orchestra's to do.** *Corrected:* there is no backup job and no
+    derived copy — `transcripts.py` is read-only end to end, so the ~1,000 files/day (4.9 GB
+    across 7 homes here, oldest 193 days) are the **user's own** `~/.claude*/projects`. A
+    program that watches your transcripts must not delete them, so what shipped is the report:
+    `disk.py` says what the corpus costs at startup and every `disk_report_h`, and warns past
+    `disk_warn_gb` / under `disk_free_gb` free — which is the number that predicts the incident
+    (a full disk stops an agent writing its `.jsonl`; see `stale_alive_s`). Deleting from it
+    stays a decision the user makes at their own shell. **Built:** rotation for the two logs
+    orchestra *does* own (`audit.log.jsonl`, `dispatch.log.jsonl`), with a hard 7-day floor
+    under any segment and an audit line per batch. **Left:** nothing, unless the user wants an
+    opt-in corpus policy — which needs their explicit sign-off before any `rm`.
 13. **The four UX back-ports (UX.md Appendix E)** so the app and the desktop board agree
     pixel-for-pixel on colours and glyphs.
 
