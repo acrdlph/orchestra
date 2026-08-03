@@ -61,3 +61,20 @@ against an attacker who is already excluded by WireGuard.
 | **Self-signed TLS + SPKI pinning** (`ARCHITECTURE.md` §5) | Defends against an attacker WireGuard already excludes, at the cost of cert generation, rotation, pinning that fails closed, and a second thing to debug when the phone cannot connect. Revisit only if the transport assumption changes. |
 | **`tailscale serve` / `tailscale cert`** | Gives real certs with no manual management and is genuinely attractive — but it fronts the server with a proxy, which conflicts with binding a known interface and with the Host allowlist, and it makes the server's reachability depend on a second daemon's configuration. Worth revisiting if cert management ever becomes desirable for another reason. |
 | **`NSAllowsArbitraryLoads`** | Works, but disables ATS process-wide rather than for one host. A scoped `NSExceptionDomains` entry says what is actually intended. |
+
+## Addendum (2026-08-04) — the App Store changed one premise, not the decision
+
+This ADR was written when the client was "personal (TestFlight / sideload), never App Store."
+That premise is retired: the app is being submitted, and two consequences follow.
+
+1. **The exception now draws review.** `NSExceptionAllowsInsecureHTTPLoads` prompts a
+   justification request in App Review; `docs/mobile/APPSTORE.md` §7 carries the answer (WireGuard
+   already encrypts; the exception is scoped to `ts.net`; no `NSAllowsArbitraryLoads`).
+2. **A per-tailnet IP entry cannot ship.** The plist used to pin the author's raw tailnet IP
+   because the pairing QR advertised the bound address. The server now advertises the **MagicDNS
+   name** wherever the phone is handed an address (`pairing.advertised`, `tailnet.dns_name`), which
+   the shipped `ts.net` exception covers for every tailnet; the raw address rides beside it as
+   `addr`, for diagnostics. A tailnet with MagicDNS off still pairs by IP and the store build's
+   ATS will refuse it by design — MagicDNS on (Tailscale's default) is the supported path.
+
+The decision itself — plain HTTP inside WireGuard, bearer tokens, no TLS theater — is unchanged.

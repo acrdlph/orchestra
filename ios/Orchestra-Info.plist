@@ -73,20 +73,21 @@
 	  names: it covers `.local` and link-local, not the `100.64/10` CGNAT range
 	  Tailscale hands out.
 
-	  TWO entries, because there are two ways to name the same Mac:
+	  ONE entry: `ts.net` with subdomains, which covers every tailnet's
+	  MagicDNS names — and since 2026-08-04 the MagicDNS name is what the
+	  server ADVERTISES (`pairing.advertised` upgrades a bound tailnet IP to
+	  the name in the QR, the manual fields and the claim's server facts).
+	  There used to be a second, per-tailnet entry pinning the author's raw
+	  tailnet IP, because ATS domain exceptions were measured to apply to
+	  IP-literal keys on iOS 26 and the QR used to hand the phone the IP.
+	  A store-distributed build cannot carry one user's IP, so the IP entry is
+	  gone with the need for it. A tailnet with MagicDNS switched OFF still
+	  pairs by IP and the board will not load on a store build — the
+	  connection error names the address it refused; switching MagicDNS on
+	  (Tailscale's default) is the fix.
 
-	  * `ts.net` with subdomains — the MagicDNS name
-	    (`achills-macbook-pro.tail1205d9.ts.net`), which is the canonical form
-	    and the one that generalises to any tailnet.
-	  * the raw tailnet IP — because **ATS domain exceptions do not apply to
-	    URLs whose host is an IP literal**, and the server's own pairing QR
-	    advertises `h=100.113.110.31`: `pairing._server_facts` reports the
-	    address the server is BOUND to, which is an address, not a name. Without
-	    this entry the address the QR hands the phone is the one address the app
-	    cannot load.
-
-	  That second entry is per-tailnet and it is the one line of this project
-	  that has to change when the Mac's tailnet address does.
+	  Loopback needs no entry: ATS permits plain HTTP to 127.0.0.1, which is
+	  what keeps the simulator rehearsal flow working.
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>
@@ -96,11 +97,6 @@
 			<dict>
 				<key>NSIncludesSubdomains</key>
 				<true/>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-			<key>100.113.110.31</key>
-			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
 			</dict>
