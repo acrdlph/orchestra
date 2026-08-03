@@ -21,3 +21,6 @@ nohup.out
 *.p8
 .orchestra/
 ios/Signing.xcconfig
+
+# per-boot pairing lockfile — runtime state, like devices.json
+devices.lock

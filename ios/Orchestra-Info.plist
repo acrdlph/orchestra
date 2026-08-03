@@ -25,8 +25,18 @@
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
-		<string></string>
+		<string>LaunchBackground</string>
 	</dict>
+
+	<!--
+	  Export compliance, answered once here so every upload skips the
+	  questionnaire: the app's only cryptography is what the OS provides
+	  (ATS/TLS where used, the Keychain, and traffic inside the user's own
+	  WireGuard tailnet — WireGuard's crypto belongs to Tailscale's app, not
+	  this one). That is the textbook "exempt" case.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>UISupportedInterfaceOrientations</key>

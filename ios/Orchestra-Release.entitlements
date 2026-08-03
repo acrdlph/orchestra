@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The Release twin of `Orchestra.entitlements`, and the ONE difference is
+	  `aps-environment`: `production`, because a build signed for App Store
+	  Connect / TestFlight must ask Apple's production APNs gateway for its
+	  token — a `development` entitlement on a distribution-signed build mints
+	  tokens the production gateway answers `BadDeviceToken`. Debug keeps
+	  `development` in the other file, which is what a cable-connected device
+	  build and the sandbox `.p8` flow expect.
+
+	  Everything else matches the Debug file for the same reasons stated there:
+	  the identifiers are team-prefixed via `$(AppIdentifierPrefix)` so the
+	  ad-hoc simulator build (empty prefix) and a signed device build
+	  (`4K738RNZAA.`) both keep their keychain access group, and the -34018
+	  token-persistence bug stays fixed on both.
+
+	  The server side follows: a TestFlight install registers with
+	  `environment: production`, and `push.py` must send through the production
+	  gateway for that token (`apns_environment` in orchestra.config.json is
+	  per-DEVICE on the wire — the app reports which one it lives in).
+	-->
+	<key>application-identifier</key>
+	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>
