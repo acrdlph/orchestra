@@ -984,6 +984,25 @@ def _sid_of(base):
 EVENTS_LOG = config.HERE / "events.log.json"
 
 
+# --------------------------------------------------------------- sleep / wake
+
+# The lid closed and nothing ran. ARCHITECTURE.md §6.5 ("Sleep — the unowned
+# failure") names both numbers: "on a monotonic-vs-wall gap > 120 s,
+# re-baseline without emitting, new epoch, resync all subscribers, suppress
+# events for two ticks", and §4.3's loop sketch spells the same thing
+# `if gap > SLEEP_GAP_S: _on_wake(gap)  # new epoch, clear history, suppress
+# events 2 ticks`. 120 s is four times this loop's own 30 s cadence
+# (`push_loop`'s `wait_for(timeout=30.0)`), which is the headroom that keeps a
+# merely slow sweep from reading as a sleep.
+SLEEP_GAP_S = 120.0
+
+# "suppress events for two ticks" — counted in this loop's ticks, not seconds,
+# because the thing being waited out is the OBSERVER settling (a post-wake
+# process list, a cold git cache, transcripts whose mtimes all moved at once),
+# and that settles in sweeps rather than on a wall clock.
+SETTLE_TICKS = 2
+
+
 def prefs_from_device(push):
     """A device's stored push object (auth) -> `Preferences`. Everything the
     device set via `/api/v1/devices/self/settings`, with the type defaults for
@@ -1024,6 +1043,11 @@ class Service:
     round trips forever. One shared `Backoff` lives here too, not per device: a
     429/503 is Apple's word about the SERVICE, and backing off one device while
     the others keep hammering earns a longer ban (push.Backoff's own docstring).
+
+    It also owns the sleep/wake seam, because it owns the diff: a tick that
+    arrives two minutes late is holding a `_prev` from before the lid closed,
+    and diffing that against the world as found is a notification storm about
+    3 a.m. See `_wake_gap` / `_on_wake` (ARCHITECTURE.md §4.3, §6.5).
     """
 
     def __init__(self, log_path=None, server="orchestra"):
@@ -1038,6 +1062,91 @@ class Service:
         self._backoff = None      # one shared Backoff, injected into every device
         self._lock = threading.Lock()
         self.cursor = 0           # last observer version consumed
+        self._last_tick = None    # (wall, monotonic) of the previous sweep
+        self._settle = 0          # ticks of post-wake push suppression left
+        self.wake_gap = 0.0       # seconds of the LAST detected sleep gap
+
+    # -- sleep / wake -------------------------------------------------------
+
+    def _wake_gap(self, now, mono):
+        """Seconds this tick was late by *because the Mac slept* — else 0.0.
+
+        Two terms, because the platform is not consistent about which clock the
+        sleep lands in and the remedy is the same either way:
+
+          * SKEW — `wall_d - mono_d`. The textbook signal, and the one
+            ARCHITECTURE.md §4.3 writes: the wall clock ran on through the sleep
+            while `time.monotonic()` froze, so the wall jumped and the monotonic
+            barely advanced.
+          * STALL — `min(wall_d, mono_d)`. ENGINE.md §4.5 measured the opposite
+            on this machine — macOS `time.monotonic()` is `mach_absolute_time()`
+            and INCLUDES sleep (644,530.1 s monotonic vs 644,524.9 s
+            wall-since-boot over 179 hours), which `observer.Snapshot.mono`
+            already records as a platform fact. Where that holds the skew is
+            ~0 across a nine-hour sleep and a pure skew test would never fire at
+            all. What is unmistakable on BOTH clocks is that a tick with a 30 s
+            ceiling arrived two minutes late.
+
+        Taking the max means the detector does not depend on which behaviour the
+        host has, and neither term can be silently wrong: skew alone under-fires
+        on macOS, stall alone would call a genuinely wedged sweep a sleep — but
+        a sweep stalled past four times its own cadence has accumulated exactly
+        the same staleness as a sleep, and the response to both (re-baseline,
+        push nothing for two ticks) is the response you want either way.
+
+        Measured tick-start to tick-start, so it is this loop's OWN cadence
+        being judged and no other thread's clock is involved.
+        """
+        last, self._last_tick = self._last_tick, (now, mono)
+        if last is None:
+            return 0.0                       # first tick: nothing to be late by
+        wall_d, mono_d = now - last[0], mono - last[1]
+        gap = max(wall_d - mono_d, min(wall_d, mono_d))
+        return gap if gap > SLEEP_GAP_S else 0.0
+
+    def _on_wake(self, gap, now):
+        """Re-baseline and go quiet for the settle. §4.3's `_on_wake`.
+
+        It reuses the RESTART baseline verbatim — `_baselined = False` — rather
+        than carrying a second "am I stale" flag, because the two situations are
+        the same situation: `_prev` describes a world that is hours old, and
+        diffing it against the world as found produces a burst of edges nobody
+        should be buzzed about (every account whose limit reset while the lid
+        was shut, every session whose process is gone, every schedule whose
+        `due_at` passed). One mechanism, one place to get it right.
+
+        What it deliberately does NOT touch is the per-device `_pending` arms.
+        Those are conditions ALREADY seen and dwelling — an agent that put a
+        permission dialog on screen ten seconds before the lid closed — and they
+        are still true when the lid opens because nothing ran in between. Their
+        release is `_select`'s job on the first tick after the settle, which
+        also cancels the ones the world no longer holds. Clearing them here
+        would eat the one class of notification a wake must NOT lose.
+
+        The `EventLog.epoch` is deliberately left alone too. It means "the ids
+        you hold are gone" (a truncation or a sequence reset); a sleep truncates
+        nothing and every `since` cursor a phone holds is still a valid position
+        in the same total order. Bumping it would tell every phone to throw its
+        cursor away and refetch for no reason. §6.5's "new epoch, resync all
+        subscribers" is about the DELTA cursor (`<epoch>:<v>`, API.md §6.1),
+        which lives in the observer and the SSE stream, not here.
+        """
+        self.wake_gap = gap
+        self._baselined = False
+        self._settle = SETTLE_TICKS
+        try:
+            from . import auth
+            # One line, naming the gap, in the file a human already greps when
+            # asking "why did my phone go quiet". `auth.audit` swallows its own
+            # write errors; this catch is for the import and the encode, because
+            # a diagnostic that can kill the push thread is worse than no
+            # diagnostic.
+            auth.audit(at=now, event="wake", gap_s=round(gap, 1),
+                       settle_ticks=SETTLE_TICKS, outcome="push_suppressed",
+                       detail=f"slept ~{int(gap)}s — re-baselined, no push for "
+                              f"{SETTLE_TICKS} ticks")
+        except Exception:
+            pass
 
     def _notifier_for(self, devid, push):
         n = self._per_device.get(devid)
@@ -1069,12 +1178,27 @@ class Service:
             self._backoff = pushmod.Backoff()
         return self._sink
 
-    def observe(self, projection, now=None, counts=None):
+    def observe(self, projection, now=None, counts=None, mono=None):
         """One sweep. Derive + log once; deliver per push device. Returns the
-        number of pushes actually sent (or would-be-sent under a NoopSink)."""
+        number of pushes actually sent (or would-be-sent under a NoopSink).
+
+        `now` is the wall clock (what events are stamped with) and `mono` the
+        monotonic one (what the tick is MEASURED with); both are injectable so a
+        test can drive the sleep/wake detector without sleeping.
+        """
         from . import auth, push as pushmod
         now = time.time() if now is None else now
+        mono = time.monotonic() if mono is None else mono
         with self._lock:
+            # Did the Mac sleep between this tick and the last? Detected here,
+            # in the push loop's own cadence, because this loop is the thing
+            # that would storm: the observer already survives a clock step
+            # (`Snapshot.mono` orders publishes), and nothing else in the
+            # pipeline cares how late a sweep is.
+            gap = self._wake_gap(now, mono)
+            if gap:
+                self._on_wake(gap, now)
+
             # The FIRST observe after construction is a silent baseline: derive
             # to advance the generation counters and seed `_prev`, but append
             # nothing and push nothing. Without it, every process restart diffs
@@ -1085,14 +1209,36 @@ class Service:
             # already holds those events; re-emitting them re-buzzes the phone for
             # questions it was already told about (ARCHITECTURE.md §6.5's "re-
             # baseline without emitting", here for restart rather than wake).
+            # `_on_wake` above re-arms exactly this flag, so the sleep burst
+            # takes the same silent path — the ONE difference being that on
+            # wake `_prev` holds the pre-sleep world rather than an empty one,
+            # which is what makes the derive a burst worth swallowing.
             events = derive(self._prev, projection, now=now, gens=self._gens)
             self._prev = projection
             if not self._baselined:
                 self._baselined = True
+                self._settle = max(0, self._settle - 1)   # the wake tick counts
                 return 0
             for e in events:
                 e.counts = counts or {}
             self.log.append(events)
+            if self._settle > 0:
+                # Post-wake settle. Note WHERE this returns: after the log,
+                # before the fan-out. The log is the lossless half and the phone
+                # reconciles against it on every foreground, so a condition that
+                # arises in the seconds after the lid opens is still a FACT the
+                # phone sees — only the buzz is dropped, which is the whole of
+                # what §6.5 asks for ("suppress events for two ticks").
+                #
+                # Returning before `_select` is what makes the settle a pause
+                # rather than a shredder: `_select` CONSUMES `_pending` (it
+                # deletes an arm as it releases it), so running it here and
+                # discarding the result would silently destroy every dwelling
+                # condition that outlived the sleep. Untouched, those arms fire
+                # on the first tick past the settle if the world still holds
+                # them, and are cancelled by `_select` if it does not.
+                self._settle -= 1
+                return 0
 
             # world-level derive/log done once (above). The per-device gates —
             # preference, dwell/flap/coalesce, quiet/budget/mute — run per device

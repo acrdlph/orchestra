@@ -16,6 +16,8 @@ Covers the four HIGHs and the named mediums from the PUSH brief:
   * F7  `hooks.install()` rewrites the script atomically and skips a no-op.
   * F8  a pending arm is cancelled on the SPECIFIC status it asserts.
   * F9  the events log is created 0o600.
+  * F10 a sleep/wake gap re-baselines and goes quiet for two ticks instead of
+        storming the phone with everything that "changed" at 3 a.m.
 
     python3 -m unittest tests.test_fixes_push -v
 """
@@ -393,6 +395,183 @@ class TestEventLogPerms(unittest.TestCase):
                              "audit.log.jsonl, not world-readable 0644")
         finally:
             __import__("shutil").rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------- F10 post-wake suppression
+
+class TestPostWakeSuppression(_ServiceCase):
+    """ARCHITECTURE.md §4.3 / §6.5: a monotonic-vs-wall gap > 120 s is a sleep,
+    and the answer is a re-baseline plus two ticks of silence.
+
+    Every tick here is driven with BOTH clocks injected, so the two-hour sleep
+    costs the suite nothing and the detector is exercised in the shape it runs
+    in — tick-start to tick-start, in the push loop's own cadence.
+    """
+
+    def wake_svc(self):
+        """A Service past its restart baseline, with one device and a recording
+        sink, ticking at t=1000 / mono=1000."""
+        self.device()
+        sink = RecordingSink(push.Response(status=200, apns_id="A"))
+        self.use_sink(sink)
+        s = self.svc()
+        s.observe(proj(sessions={"s1": sess("working")}), now=1000.0, mono=1000.0)
+        return s, sink
+
+    # -- the normal case: nothing changes -----------------------------------
+
+    def test_an_ordinary_tick_suppresses_nothing(self):
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=1003.0, mono=1003.0)
+        self.assertEqual(len(sink.sends), 1,
+                         "a 3 s tick is not a sleep and must still push")
+        self.assertEqual(s.wake_gap, 0.0)
+        self.assertEqual(s._settle, 0)
+
+    def test_the_loops_own_30s_cadence_is_not_a_sleep(self):
+        """`push_loop` waits up to 30 s per tick by design. The threshold has to
+        clear that with room, or the detector fires on a quiet fleet."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=1030.0, mono=1030.0)
+        self.assertEqual(len(sink.sends), 1)
+
+    def test_a_slow_tick_under_the_threshold_is_not_a_sleep(self):
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=1090.0, mono=1090.0)
+        self.assertEqual(len(sink.sends), 1, "90 s < 120 s — still a live tick")
+
+    # -- the sleep, in both of the shapes the platform produces --------------
+
+    def test_a_two_hour_gap_swallows_the_wake_burst(self):
+        """ENGINE.md §4.5's measured macOS behaviour: `time.monotonic()` is
+        `mach_absolute_time()` and INCLUDES sleep, so both clocks advance two
+        hours together. The skew is zero; what gives the sleep away is that a
+        tick with a 30 s ceiling arrived 7,200 s late."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=1003.0, mono=1003.0)
+        burst = proj(sessions={"s1": sess("needs_input"),
+                               "s2": sess("blocked"),
+                               "s3": sess("waiting")},
+                     accounts={"acct": {"exhausted": False, "group": "g"}},
+                     worktrees={"wt": "free"})
+        s.observe(burst, now=8203.0, mono=8203.0)
+        self.assertEqual(sink.sends, [],
+                         "opening the lid must not deliver 3 a.m. transitions")
+        self.assertAlmostEqual(s.wake_gap, 7200.0, places=1)
+
+    def test_a_frozen_monotonic_across_the_sleep_is_the_same_wake(self):
+        """The textbook shape §4.3 writes: the wall clock ran through the sleep
+        and `time.monotonic()` did not. Same gap, same answer."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=1003.0, mono=1003.0)
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=8203.0, mono=1033.0)      # wall +7200, monotonic +30
+        self.assertEqual(sink.sends, [])
+        self.assertAlmostEqual(s.wake_gap, 7170.0, places=1)
+
+    def test_the_wake_tick_appends_nothing_to_the_log(self):
+        """It is the RESTART baseline's own path — derive to advance the
+        generations and seed `_prev`, append nothing, push nothing."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=8200.0, mono=8200.0)
+        self.assertEqual(s.log.since()["events"], [])
+
+    def test_it_re_baselines_through_the_restart_flag_not_a_second_one(self):
+        s, _ = self.wake_svc()
+        s._baselined = True
+        s._on_wake(7200.0, 8200.0)
+        self.assertFalse(s._baselined,
+                         "the wake must re-arm the SAME flag the restart "
+                         "baseline uses — one mechanism, one place to fix")
+        self.assertEqual(s._settle, notify.SETTLE_TICKS)
+
+    # -- the settle ---------------------------------------------------------
+
+    def test_the_settle_is_exactly_two_ticks(self):
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=8200.0, mono=8200.0)          # tick 1: the wake itself
+        self.assertEqual(s._settle, 1)
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=8203.0, mono=8203.0)          # tick 2: still settling
+        self.assertEqual(s._settle, 0)
+        self.assertEqual(sink.sends, [])
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=8206.0, mono=8206.0)
+        s.observe(proj(sessions={"s1": sess("needs_input")}),
+                  now=8209.0, mono=8209.0)          # tick 4: the pipeline is back
+        self.assertEqual(len(sink.sends), 1,
+                         "the settle is two ticks, not forever")
+
+    def test_the_settle_drops_the_buzz_and_keeps_the_fact(self):
+        """Suppression is PUSH-side only. A condition arising in the seconds
+        after the lid opens is still written to the durable log, which is what
+        the phone reconciles against on its next foreground — the settle costs
+        a notification, never a fact."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=8200.0, mono=8200.0)          # the wake tick
+        s.observe(proj(sessions={"s1": sess("working"),
+                                 "s2": sess("needs_input")}),
+                  now=8203.0, mono=8203.0)          # a REAL new edge, settling
+        self.assertEqual(sink.sends, [])
+        types = [e["type"] for e in s.log.since()["events"]]
+        self.assertEqual(types, ["session.needs_answer"])
+
+    # -- the thing a wake must NOT eat --------------------------------------
+
+    def test_a_condition_still_true_after_the_settle_reaches_the_phone(self):
+        """The one class of notification a re-baseline must not swallow: a
+        permission dialog that went up seconds before the lid closed is STILL on
+        screen when it opens, because nothing ran in between. Its `_pending` arm
+        survives the wake untouched (the suppressed ticks return before
+        `_select`, which is what CONSUMES an arm), and `_select` releases it on
+        the first tick past the settle."""
+        s, sink = self.wake_svc()
+        held = proj(sessions={"s1": sess("blocked")})
+        s.observe(held, now=1001.0, mono=1001.0)    # arm; dwell is 40 s
+        self.assertEqual(sink.sends, [], "still dwelling when the lid shut")
+        s.observe(held, now=8201.0, mono=8201.0)    # wake
+        self.assertEqual(sink.sends, [])
+        s.observe(held, now=8204.0, mono=8204.0)    # settling
+        self.assertEqual(sink.sends, [])
+        s.observe(held, now=8207.0, mono=8207.0)    # past the settle
+        self.assertEqual(len(sink.sends), 1,
+                         "an agent that still needs you must reach the phone "
+                         "after the settle, not be eaten by the re-baseline")
+
+    def test_a_condition_the_sleep_outlived_is_not_pushed_after_the_settle(self):
+        """The other half of the same guarantee: the arm is released only if the
+        world still holds the status it asserts. The block resolved (or the
+        process is gone) — nothing is delivered."""
+        s, sink = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("blocked")}), now=1001.0, mono=1001.0)
+        back = proj(sessions={"s1": sess("working")})
+        s.observe(back, now=8201.0, mono=8201.0)
+        s.observe(back, now=8204.0, mono=8204.0)
+        s.observe(back, now=8207.0, mono=8207.0)
+        self.assertEqual(sink.sends, [],
+                         "a stale arm whose condition is gone must be cancelled")
+
+    # -- the diagnostic -----------------------------------------------------
+
+    def test_the_wake_writes_one_audit_line_naming_the_gap(self):
+        s, _ = self.wake_svc()
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=8200.0, mono=8200.0)
+        s.observe(proj(sessions={"s1": sess("working")}),
+                  now=8203.0, mono=8203.0)
+        wakes = [ln for ln in fb.auth.read_audit() if ln.get("event") == "wake"]
+        self.assertEqual(len(wakes), 1, "one line per wake, not one per tick")
+        self.assertAlmostEqual(wakes[0]["gap_s"], 7200.0, places=1)
+        self.assertEqual(wakes[0]["settle_ticks"], notify.SETTLE_TICKS)
+        self.assertIn("7200", wakes[0]["detail"])
 
 
 if __name__ == "__main__":
