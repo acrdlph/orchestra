@@ -8,6 +8,10 @@ events.log.json
 events.log.json.tmp
 idem.store.json
 idem.store.json.tmp
+finish.closeouts.json
+finish.closeouts.json.tmp
+dispatch.jobs.json
+dispatch.jobs.json.tmp
 __pycache__/
 # the generated hook fragment + script (orchestra.hooks.install). Regenerated on
 # every dispatch, and it carries THIS machine's port — committing it would ship

@@ -1000,6 +1000,27 @@ class TestDispatchContract(ConfigGuard):
     def setUp(self):
         super().setUp()
         fb.config.DEMO = True   # a refusal must come back before any thread launches
+        # job records are persisted now — temp file, never the checkout
+        self._jobs_dir = tempfile.mkdtemp(prefix="fb-jobs-")
+        self._jobs_state = fb.dispatch.DISPATCH_JOBS
+        fb.dispatch.DISPATCH_JOBS = Path(self._jobs_dir) / "dispatch.jobs.json"
+        fb.dispatch._reset_jobs()
+
+    def tearDown(self):
+        # a dispatch settles on a worker thread, and settling now WRITES the
+        # job record. Let the workers land before the path goes back, or a
+        # late one persists into the developer's checkout.
+        import time as _t
+        deadline = _t.time() + 5
+        while _t.time() < deadline:
+            with fb.dispatch._jobs_lock:
+                if all(j["done"] for j in fb.dispatch._jobs.values()):
+                    break
+            _t.sleep(0.02)
+        fb.dispatch.DISPATCH_JOBS = self._jobs_state
+        fb.dispatch._reset_jobs()
+        shutil.rmtree(self._jobs_dir, ignore_errors=True)
+        super().tearDown()
 
     def test_missing_model_or_effort_is_refused_cleanly(self):
         for kw in ({}, {"model": "opus"}, {"effort": "high"}):
@@ -1026,6 +1047,10 @@ class FakeGit:
 
     def __call__(self, cmd, cwd=None, timeout=None, **kw):
         self.calls.append(cmd)
+        if cmd[0] == "tmux":
+            # the reap on a successful close (dispatch.reap_dead_sessions):
+            # no fleet sessions at all, so nothing is ever killed
+            return 0, ""
         if "fetch" in cmd:
             return 0, ""
         if "merge-base" in cmd:
@@ -1052,6 +1077,11 @@ class TestStartFinish(ConfigGuard):
         super().setUp()
         fb.config.DEMO = False
         fb._closeouts.clear()
+        # the closeout map is persisted now; point it at a temp file so the
+        # suite never writes state into the developer's own checkout
+        self._state_dir = tempfile.mkdtemp(prefix="fb-closeout-")
+        self._closeout_state = fb.finish.CLOSEOUT_STATE
+        fb.finish.CLOSEOUT_STATE = Path(self._state_dir) / "finish.closeouts.json"
         self._saved = {n: getattr(fb.shell, n) for n in ("run",)}
         self._saved_dispatch = fb.dispatch.start_dispatch
         self._saved_git = {n: getattr(fb.gitrepo, n) for n in
@@ -1075,6 +1105,8 @@ class TestStartFinish(ConfigGuard):
 
     def tearDown(self):
         fb._closeouts.clear()   # nothing reaps these for us any more
+        fb.finish.CLOSEOUT_STATE = self._closeout_state
+        shutil.rmtree(self._state_dir, ignore_errors=True)
         for n, f in self._saved.items():
             setattr(fb.shell, n, f)
         fb.dispatch.start_dispatch = self._saved_dispatch

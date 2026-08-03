@@ -12,6 +12,7 @@ persistence. Every test here failed before the fix it pins.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -112,11 +113,20 @@ class TestStartDispatchAcceptPathLock(unittest.TestCase):
         # a worker that never settles: the job hangs "in flight" so the second
         # accept must be refused by the reservation alone, not by timing
         fb.dispatch._run_dispatch = lambda *a, **kw: None
+        # start_dispatch persists a write-ahead job record — temp file, so the
+        # suite never writes state into the developer's own checkout
+        self._jobs_dir = tempfile.mkdtemp(prefix="fb-jobs-")
+        self._jobs_state = fb.dispatch.DISPATCH_JOBS
+        fb.dispatch.DISPATCH_JOBS = Path(self._jobs_dir) / "dispatch.jobs.json"
+        fb.dispatch._reset_jobs()
 
     def tearDown(self):
         fb.dispatch._run_dispatch = self._run
         fb.config.DEMO = self._demo
         fb.dispatch._wt_reservations.clear()
+        fb.dispatch.DISPATCH_JOBS = self._jobs_state
+        fb.dispatch._reset_jobs()
+        shutil.rmtree(self._jobs_dir, ignore_errors=True)
 
     def test_second_dispatch_for_the_same_worktree_is_refused(self):
         out1 = fb.start_dispatch("close out", worktree="w1",
