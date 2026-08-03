@@ -193,6 +193,12 @@ class TestQuotingIsUnchanged(SendHarness):
         fb.send_to_process(4242, "one\n  two", sid="s-alpha")
         self.assertIn('do script "one two" in t', self.scripts()[0])
 
+    def test_a_bare_carriage_return_is_collapsed_not_submitted_early(self):
+        # a lone CR is whitespace but no LF; the old \n-only collapse let it
+        # through and it reached the terminal as an early Return (review L4).
+        fb.send_to_process(4242, "one\rtwo\r\nthree", sid="s-alpha")
+        self.assertIn('do script "one two three" in t', self.scripts()[0])
+
 
 # ------------------------------------------------------------- tmux, same rule
 

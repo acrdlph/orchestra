@@ -285,7 +285,11 @@ def send_to_process(pid, text, **ident):
     """
     if config.DEMO:
         return {"ok": False, "message": "demo mode — no live agents to talk to"}
-    text = re.sub(r"\s*\n\s*", " ", text).strip()
+    # Collapse any run of line breaks — CR, LF or CRLF — with their surrounding
+    # whitespace to one space. A *bare* CR is the case the old `\n`-only pattern
+    # missed: it is whitespace but carries no LF, and it reaches the terminal as
+    # a Return that submits the message early, splitting one line into two.
+    text = re.sub(r"\s*[\r\n]+\s*", " ", text).strip()
     if not text:
         return {"ok": False, "message": "empty message"}
     proc, refusal = identity.resolve(pid, **ident)
