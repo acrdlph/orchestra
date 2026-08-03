@@ -47,6 +47,7 @@ RESUME_POLL_S = 5.0
 RESUME_MAX_ATTEMPTS = 10       # re-arms on "still limited" before giving up
 _resumes = {}                  # "worktree|sid" -> schedule dict
 _resumes_lock = threading.Lock()
+_firing = set()                # keys with a fire in flight — see `resume_loop`
 
 
 def save_resumes():
@@ -431,20 +432,55 @@ def fire_resume(key):
                        fired_at=now, message=out["message"])
 
 
+def _fire_claimed(key, now):
+    """Fire one CLAIMED schedule, then release the claim. `resume_loop` only.
+
+    The `finally` is the load-bearing line: a key left in `_firing` is a
+    schedule that can never fire again, which is a silent failure of exactly
+    the unattended 3am keystroke this module exists for. So the release happens
+    whether the fire returned, raised, or re-armed for the next reset."""
+    try:
+        fire_resume(key)
+    except Exception as e:       # a broken fire must not kill the loop
+        _resume_set(key, status="failed", fired_at=now,
+                    message=f"internal error: {e}")
+    finally:
+        with _resumes_lock:
+            _firing.discard(key)
+
+
 def resume_loop():
-    """Daemon: fire due schedules; prune finished ones after a day."""
+    """Daemon: fire due schedules; prune finished ones after a day.
+
+    Each due schedule fires on its OWN short-lived daemon thread. Serially, one
+    slow resume delayed every other one behind it — and `_tmux_resume` is slow
+    BY DESIGN: `RESUME_READY_S` is seven minutes of waiting out a fat session's
+    reload and auto-compaction, times three attempts. A weekly cap resets a
+    whole fleet at the same instant, so "one at a time" is the case, not the
+    corner.
+
+    EXACTLY ONCE SURVIVES IT, and that is the only reason this is not a one-line
+    map. Serial firing could not re-enter a key: the next pass did not start
+    until the previous fire returned. Off-thread it can — five seconds later the
+    same key is still `pending` and still due, and a second thread would start
+    typing into an agent the first one is mid-paste with. That is the
+    triple-send 1e7674b closed, arriving through another door.
+
+    So a key is CLAIMED into `_firing` inside the SAME critical section that
+    finds it due. Per key this stays strictly serial; only across keys is it
+    parallel. `_fire_claimed` releases the claim in a `finally`.
+    """
     while True:
         time.sleep(RESUME_POLL_S)
         now = time.time()
         with _resumes_lock:
             due = [k for k, r in _resumes.items()
-                   if r.get("status") == "pending" and r.get("due_at", 0) <= now]
+                   if r.get("status") == "pending" and r.get("due_at", 0) <= now
+                   and k not in _firing]
+            _firing.update(due)
         for k in due:
-            try:
-                fire_resume(k)
-            except Exception as e:   # a broken fire must not kill the loop
-                _resume_set(k, status="failed", fired_at=now,
-                            message=f"internal error: {e}")
+            threading.Thread(target=_fire_claimed, args=(k, now),
+                             name=f"resume-fire-{k}", daemon=True).start()
         with _resumes_lock:
             stale = [k for k, r in _resumes.items()
                      if r.get("status") in ("done", "failed")
