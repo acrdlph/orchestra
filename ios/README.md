@@ -273,9 +273,14 @@ it cannot close:
 | **URLSession retransmits under us** | **no.** Not app-configurable |
 | **a second phone, or the desktop board** | **no.** A client-side lock is defeated by two clients — the exact case §7.1 principle 3 warns about |
 
-The two open rows are the server's to close. **No `Idempotency-Key` header is
-sent**, deliberately: a header this server ignores would look like a guarantee and
-be none.
+The two open rows were the server's to close, and it has: `orchestra/idem.py`
+persists a boot-tagged reservation write-ahead, so a retry that lands after
+`./start.sh` restarted the server is refused rather than re-executed. Both
+mutation requests now carry **`Idempotency-Key`** (a fresh client UUID per user
+action) and **`Idempotency-Issued-At`** — `Endpoint.freshIdempotency()` mints
+them and `urlRequest` sets them. Per tap, never per payload: retrying one action
+replays the first answer, while launching the same brief again deliberately is a
+second key and a second agent.
 
 ### Phase 3: the defect a screenshot found
 
