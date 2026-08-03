@@ -17,8 +17,8 @@
   --bg:#0d0d0d; --bg-2:#111111; --surface:#161616; --surface-2:#1c1c1c;
   --border:#2a2a2a; --border-2:#3a3a3a;
   --fg:#e8e6e3; --muted:#8a8784; --muted-2:#6a6764;
-  --accent:#d97757; --accent-2:#e8a87c; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
-  --accent-glow:rgba(217,119,87,.25);
+  --accent:#d97757; --accent-2:#edb9ac; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
+  --accent-glow:rgba(217,119,87,.12);
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
@@ -90,7 +90,7 @@ header {
 .chip.t { color:var(--accent-2); border-color:var(--accent-2); }
 .chip.f { color:var(--cyan); border-color:var(--cyan); }
 .chip.l { color:var(--yellow); border-color:var(--yellow); }
-.hint { font-family:var(--sans); color:var(--muted-2); font-size:var(--fs-xs); margin-left:auto; }
+.hint { font-family:var(--sans); color:var(--muted); font-size:var(--fs-xs); margin-left:auto; }
 
 #viz { margin:6px 0 40px; }
 svg { display:block; }
@@ -119,7 +119,7 @@ g.branchg:hover .bline { stroke-opacity:1; }
 #tip .hd { font-weight:600; font-size:var(--fs-md); }
 #tip .br { color:var(--cyan); }
 #tip .mut { color:var(--muted); }
-#tip .dim { color:var(--muted-2); }
+#tip .dim { color:var(--muted); }
 #tip .st { font-weight:600; letter-spacing:var(--track); font-size:var(--fs-2xs); }
 /* human voice: the commit subject; data lines stay mono via .mo */
 #tip .mut, #tip .dim { font-family:var(--sans); }
