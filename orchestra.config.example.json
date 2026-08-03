@@ -7,6 +7,13 @@
   "reserve_percent": {"main": 20},
   "router_home": null,
 
+  "_disk": "orchestra REPORTS what ~/.claude*/projects costs and never deletes any of it — retention there is yours. log_max_mb/log_keep govern ONLY the two logs orchestra writes itself (audit.log.jsonl, dispatch.log.jsonl); a rotated segment under 7 days old is never removed whatever log_keep says. `--disk-report` prints the report, `--prune-logs` runs the reap. Set disk_report_h to 0 to turn the reporting thread off.",
+  "disk_report_h": 6.0,
+  "disk_warn_gb": 10.0,
+  "disk_free_gb": 10.0,
+  "log_max_mb": 8.0,
+  "log_keep": 5,
+
   "apns_team_id": "XXXXXXXXXX",
   "apns_topic": "sh.orchestra.app",
   "apns_environment": "sandbox",

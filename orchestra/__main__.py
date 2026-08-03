@@ -16,7 +16,8 @@ reachable from the tailnet (API.md §2.5 puts every device route behind
 import sys
 import threading
 
-from orchestra import auth, config, notify, observer, resume, server, tailnet
+from orchestra import (auth, config, disk, notify, observer, resume, server,
+                       tailnet)
 
 
 def _devices(args):
@@ -65,6 +66,31 @@ def _devices(args):
     return False
 
 
+def _maintenance(args):
+    """The disk flags. Returns True if one of them ran — nothing starts.
+
+    Beside `_devices` and for its reason: `--prune-logs` is the only code path
+    in this program that unlinks anything, and the boundary that keeps it safe
+    is that you have to be at a shell on this machine to ask for it. It is also
+    why `--disk-report` is here rather than on `/api/health` — that route
+    answers without a token and publishes NOTHING that varies with what this
+    machine is doing (server.py says so at length); the size of your corpus and
+    the name of your oldest project directory is exactly such a thing.
+    """
+    if args.disk_report:
+        for line in disk.report_lines(force=True):
+            print(line)
+        return True
+    if args.prune_logs:
+        # Rotate first, so a log already past the cap becomes a segment this
+        # pass can consider, instead of needing a second run tomorrow.
+        for log in disk.own_logs():
+            disk.rotate_if_needed(log)
+        print(disk.prune_report(disk.prune_logs()))
+        return True
+    return False
+
+
 def _resolve_host():
     """Turn `--tailnet` into an address, or exit saying why it could not.
 
@@ -102,7 +128,7 @@ def _resolve_host():
 def main():
     args = config.load_config()
     config.DEMO = args.demo
-    if _devices(args):
+    if _devices(args) or _maintenance(args):
         return
     if args.tailnet:
         _resolve_host()
@@ -134,6 +160,13 @@ def main():
         # thing provable before a key exists.
         threading.Thread(target=notify.push_loop, args=(observer,),
                          daemon=True).start()
+        # The corpus report, and rotation for the board's own logs. It runs on
+        # a SIX HOUR clock and its first pass is immediate, which is the only
+        # reason it is a thread and not a line in main(): the scan is 1.2 s
+        # cold over 35,365 files and the board must not wait on it to bind.
+        # Off with `"disk_report_h": 0`, which is a supported answer — the
+        # report is advice about the user's own disk, not a control.
+        threading.Thread(target=disk.disk_loop, daemon=True).start()
     # server.Server, not a bare ThreadingHTTPServer: the listen backlog and the
     # dropped-subscriber handling that `/api/events` needs live on the class,
     # and a board started with the stock one would stream perfectly and then

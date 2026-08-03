@@ -81,6 +81,7 @@ import threading
 import time
 
 from . import config
+from . import disk
 from . import tailnet
 
 
@@ -744,7 +745,7 @@ def scrub(text):
 
 
 def audit(**fields):
-    """One JSON object per line, appended, 0600, never rotated.
+    """One JSON object per line, appended, 0600, rotated at `log_max_mb`.
 
     WHO / WHAT / WHEN and deliberately not WHAT WAS SAID. The body of
     `/api/send` is the text typed at an agent and the body of `/api/dispatch`
@@ -763,19 +764,32 @@ def audit(**fields):
 
     A failure to write is swallowed. An audit log that can take the server down
     is a denial of service wearing a security hat.
+
+    Rotation (`disk.rotate_if_needed`) happens INSIDE the lock and before the
+    append, so the size check and the write cannot interleave with another
+    thread's rotation and drop a line into a file that is already a segment.
+    `record=False` because we hold `_audit_lock` right now: an audit line
+    written from inside `disk` would deadlock on it. The marker goes into the
+    fresh file by hand instead — as its first line, which is where a reader
+    looking for "where did the rest of this file go" will look.
     """
     line = scrub(json.dumps(fields, sort_keys=True)) + "\n"
     try:
         with _audit_lock:
+            rotated = disk.rotate_if_needed(AUDIT_LOG, record=False)
             fd = os.open(AUDIT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a") as f:
+                if rotated:
+                    f.write(scrub(json.dumps(
+                        {"at": time.time(), "event": "log_rotated", **rotated},
+                        sort_keys=True)) + "\n")
                 f.write(line)
     except OSError:
         pass
 
 
-# The audit log is append-only forever (there is no rotation), and its comment
-# above and ADR 0014 both promise the failure budget is what keeps that safe:
+# The audit log used to be append-only FOREVER, and its comment above and ADR
+# 0014 both promised the failure budget is what keeps that safe:
 # "the audit log cannot be flooded by an unauthenticated peer — the ceiling is
 # 10 lines/min/IP". That promise was NOT delivered — a 429-throttled peer still
 # wrote one line per request, and an unauthenticated pairing flood wrote two —
@@ -787,6 +801,11 @@ def audit(**fields):
 # the running count of what has been suppressed since, and then the peer is
 # silent in the log until its bucket refills enough to afford a real attempt
 # again — at which point the next line is preceded by the final suppressed count.
+#
+# The gate bounds the RATE; rotation (`disk.py`) bounds the total. They answer
+# different halves of the same question and neither replaces the other: with
+# the gate alone a year of legitimate use still grows one file without limit,
+# and with rotation alone a flood buys itself a fresh file to flood.
 AUDIT_THROTTLED = "audit_throttled"
 _audit_suppress = {}   # peer -> lines suppressed since its throttle marker
 
@@ -822,13 +841,15 @@ def _audit_gate(peer, now):
 
 
 def read_audit(limit=200):
-    """The last `limit` audit lines, parsed. For tests and for a human."""
-    try:
-        lines = AUDIT_LOG.read_text().splitlines()
-    except OSError:
-        return []
+    """The last `limit` audit lines, parsed. For tests and for a human.
+
+    Reads BACK ACROSS rotated segments (`disk.tail_lines`). A tail of the live
+    file alone would report three lines the moment after a rotation and look
+    exactly like a log somebody had wiped — the one reading this file must
+    never be made to doubt.
+    """
     out = []
-    for ln in lines[-limit:]:
+    for ln in disk.tail_lines(AUDIT_LOG, limit):
         try:
             out.append(json.loads(ln))
         except ValueError:

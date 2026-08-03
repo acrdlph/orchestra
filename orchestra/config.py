@@ -376,6 +376,24 @@ CFG = {
     # change and no restart of the pipeline. NONE OF THESE IS A SECRET except
     # by reference: `apns_key_path` points at the one file that IS one, which
     # is why push.py refuses a world-readable key.
+    # Disk (disk.py). The board's inputs are the user's transcripts and they
+    # are the thing that fills the laptop: measured here, 4.878 GB in 35,365
+    # files across 7 Claude homes, growing ~1,000 files/day, on a filesystem
+    # with 13.5 GB free. A full disk is not a slow board — it is a session that
+    # cannot write its `.jsonl` at all, which is how a busy worktree came to cry
+    # "needs you" (fix `1e5efe2`). So the number gets watched.
+    #
+    # NOTHING HERE DELETES A TRANSCRIPT, and no key added later should. The
+    # corpus is the user's data; orchestra reads it and reports what it costs.
+    # `log_max_mb`/`log_keep` govern only the two append-only files orchestra
+    # writes ITSELF (audit.log.jsonl, dispatch.log.jsonl), which are 47 KB and
+    # 126 KB today — rotation there is hygiene on an unbounded file, not a way
+    # to reclaim space, and the report is what actually addresses the disk.
+    "disk_report_h": 6.0,      # hours between corpus reports; 0 disables the thread
+    "disk_warn_gb": 10.0,      # warn once the corpus is bigger than this
+    "disk_free_gb": 10.0,      # …or once the filesystem holding it has less free
+    "log_max_mb": 8.0,         # rotate orchestra's OWN logs past this (~170x today's)
+    "log_keep": 5,             # rotated segments kept — but the 7-day floor outranks it
     "apns_key_path": "",       # the .p8 auth key downloaded from Apple
     "apns_key_id": "",         # the 10-char Key ID shown beside the key
     "apns_team_id": "",        # the 10-char Team ID (top-right of the portal)
@@ -445,6 +463,18 @@ def load_config(argv=None):
                          "(status, apns-id, reason) and exit. Works the moment "
                          "an APNs key is configured; before that it says which "
                          "piece is missing. See docs/mobile/APNS-SETUP.md")
+    # Disk maintenance, at a shell for the same reason the device flags are:
+    # `--prune-logs` is the only command in orchestra that unlinks a file, and
+    # a route that could be asked to delete something is a route that can be
+    # asked by a stolen token. Both print and exit; neither starts a server.
+    ap.add_argument("--disk-report", action="store_true",
+                    help="print what the transcript corpus costs (size, file "
+                         "count, oldest write, free space) and exit. Read-only "
+                         "— orchestra never deletes your transcripts")
+    ap.add_argument("--prune-logs", action="store_true",
+                    help="rotate and reap ORCHESTRA'S OWN logs (audit.log.jsonl, "
+                         "dispatch.log.jsonl) and exit. Never touches "
+                         "~/.claude*; segments under 7 days old are always kept")
     ap.add_argument("--demo", action="store_true", help="serve fictional demo data (for screenshots)")
     args = ap.parse_args(argv)
 
