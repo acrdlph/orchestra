@@ -935,7 +935,9 @@ class Handler(BaseHTTPRequestHandler):
                     worktree=payload.get("worktree"), cwd=payload.get("cwd"),
                     tmux=payload.get("tmux"), tty=payload.get("tty"))
             elif route == "/api/finish":
-                result = finish.start_finish(payload.get("worktree") or "")
+                result = finish.start_finish(
+                    payload.get("worktree") or "",
+                    clean_scratch=bool(payload.get("clean_scratch")))
             elif route == "/api/dispatch":
                 result = dispatch.start_dispatch(
                     payload.get("mission"), payload.get("worktree") or None,

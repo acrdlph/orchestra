@@ -2352,6 +2352,22 @@ class TestHTTPSmoke(ConfigGuard):
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read())
 
+    def test_finish_forwards_clean_scratch_from_the_wire(self):
+        # The knob rides the JSON body; absent means False, byte-for-byte
+        # today's behaviour. Stubbed at the module attribute — the seam
+        # TestMockability exists to keep open.
+        calls = []
+        real = fb.finish.start_finish
+        fb.finish.start_finish = lambda wt, clean_scratch=False: (
+            calls.append((wt, clean_scratch))
+            or {"ok": False, "message": "stub"})
+        try:
+            self._post("/api/finish", {"worktree": "w1", "clean_scratch": True})
+            self._post("/api/finish", {"worktree": "w2"})
+        finally:
+            fb.finish.start_finish = real
+        self.assertEqual(calls, [("w1", True), ("w2", False)])
+
     def test_send_on_the_wire_refuses_a_bare_pid(self):
         # {pid, text} was the whole request once, and a recycled pid delivered
         # it to a stranger (ADR 0008). The legacy form stays callable and now
