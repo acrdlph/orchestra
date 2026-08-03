@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Export for App Store Connect / TestFlight. Consumed by
+	  `xcodebuild -exportArchive` (see ios/release.sh). `app-store-connect`
+	  re-signs the archive with the Apple Distribution identity and the App
+	  Store provisioning profile; `signingStyle: automatic` +
+	  `-allowProvisioningUpdates` lets xcodebuild mint that profile from the
+	  team session Xcode already holds on this Mac — no profile file to manage
+	  or expire by hand.
+
+	  `manageAppVersionAndBuildNumber` stays false: versions are set in the
+	  project (MARKETING_VERSION / CURRENT_PROJECT_VERSION), deliberately —
+	  a tool that edits them at export time is a second writer.
+	-->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>4K738RNZAA</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
