@@ -159,6 +159,22 @@ button:disabled { opacity:.5; cursor:wait; }
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
+// the server's layer is opt-in per request, so a mutation without these headers
+// is a mutation a retry can run twice. Minted PER TAP, never from the payload;
+// `crypto.randomUUID` is secure-context only and this page is served over plain
+// HTTP on the tailnet. index.html carries the long form of this note.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
 
 function rel(s) {
   s = Math.max(0, Math.round(s));
@@ -240,7 +256,7 @@ function render(d) {
 async function setReserve(label, percent) {
   try {
     const r = await fetch("/api/reserve", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ account: label, percent: Number(percent) }) });
     const d = await r.json();
     if (!d.ok) { alert("reserve: " + (d.error || "failed")); return; }

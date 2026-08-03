@@ -56,9 +56,12 @@ WHAT IS DELIBERATELY NOT HERE:
   of API.md §3 needs a bootstrap route that is exempt by construction, which
   is a second unauthenticated door; it can wait until there is a phone to walk
   through it.
-* **Host / Origin allowlists, tailnet whois, lockdown, idempotency** — steps
-  2, 3, 7, 8 and 10 of API.md §2.3's guard. Each is a real check and none of
-  them is the *missing* one.
+* **Origin allowlist, tailnet whois, lockdown** — steps 3, 7 and 8 of API.md
+  §2.3's guard. Each is a real check and none of them is the *missing* one.
+  The other two on that list have since landed and are no longer absences: the
+  **Host allowlist** is step 2 and it is right here (`allowed_hosts` /
+  `host_allowed`, `HOST_NOT_ALLOWED`), and **idempotency** is step 10 and lives
+  in `idem.py`, which `server.do_POST` wraps every keyed mutation with.
 
 Nothing in this module imports anything above `config`: it is a leaf, and it
 has to be, because it runs before every route and must not be able to reach

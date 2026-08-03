@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time as _time
 import unittest
 from pathlib import Path
 
@@ -484,6 +485,167 @@ class TestForkedResumeSendsOnce(unittest.TestCase):
         self.assertEqual(len(self.delivered), 1)
         entries = [json.loads(l) for l in self.fork.read_text().splitlines()]
         self.assertEqual(len(entries), 2)     # replayed one + our confirmed send
+
+
+# --------------------------------------------- resume_loop: parallel, once
+
+class _Stop(Exception):
+    """Ends `resume_loop`, which is otherwise a `while True`."""
+
+
+class _Clock:
+    """Stands in for `resume.time` so the loop runs a BOUNDED number of passes.
+
+    Everything but `sleep` is the real clock — the loop reads `time.time()` to
+    decide what is due, and a frozen one would make that decision meaningless.
+    """
+
+    def __init__(self, passes):
+        self.left = passes
+
+    def sleep(self, _s):
+        if self.left <= 0:
+            raise _Stop()
+        self.left -= 1
+        _time.sleep(0.002)      # let the fires this pass spawned get going
+
+    def __getattr__(self, name):
+        return getattr(_time, name)
+
+
+class TestResumeLoopFiresInParallelExactlyOnce(unittest.TestCase):
+    """`for k in due: fire_resume(k)` made one slow tmux resume the head of a
+    queue for every other agent whose limit reset at the same instant — and
+    `_tmux_resume` waits out reload and auto-compaction for up to seven minutes
+    per attempt, by design. Fires now go on their own daemon threads.
+
+    The hard half is that this must not re-open the triple-send 1e7674b closed:
+    off-thread, the NEXT pass finds the same key still `pending` and still due.
+    `_firing` is the claim, taken inside the same critical section as the due
+    scan."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="fb-resloop-")
+        self._state = fb.resume.RESUME_STATE
+        fb.resume.RESUME_STATE = Path(self.tmpdir) / "resume.schedule.json"
+        self._resumes = dict(fb._resumes)
+        fb._resumes.clear()
+        self._fire = fb.resume.fire_resume
+        self._time = fb.resume.time
+        self._poll = fb.resume.RESUME_POLL_S
+        fb.resume.RESUME_POLL_S = 0.0
+
+    def tearDown(self):
+        self.release.set()          # never leave a fire thread parked
+        fb.resume.fire_resume = self._fire
+        fb.resume.time = self._time
+        fb.resume.RESUME_POLL_S = self._poll
+        fb.resume.RESUME_STATE = self._state
+        fb.resume._firing.clear()
+        fb._resumes.clear()
+        fb._resumes.update(self._resumes)
+
+    release = threading.Event()
+
+    def _arm(self, *keys):
+        for k in keys:
+            wt, sid = k.split("|")
+            fb._resumes[k] = {"worktree": wt, "sid": sid, "account": "main",
+                              "status": "pending", "due_at": 0.0,
+                              "created_at": 0.0, "attempts": 0}
+
+    def _run(self, passes):
+        """Drive `resume_loop` for exactly `passes` scans, then return."""
+        fb.resume.time = _Clock(passes)
+        try:
+            fb.resume.resume_loop()
+        except _Stop:
+            pass
+
+    def test_two_due_schedules_are_in_flight_at_the_same_time(self):
+        self.release = threading.Event()
+        both = threading.Barrier(2)
+        entered = []
+
+        def slow_fire(key):
+            entered.append(key)
+            both.wait(timeout=5)    # only reached by two CONCURRENT fires
+            self.release.wait(5)
+
+        fb.resume.fire_resume = slow_fire
+        self._arm("alpha|s1", "beta|s2")
+        self._run(1)
+        # the barrier is the assertion: serially the second fire never starts,
+        # so the first would time out and raise BrokenBarrierError in its thread
+        deadline = _time.time() + 5
+        while len(entered) < 2 and _time.time() < deadline:
+            _time.sleep(0.01)
+        self.assertEqual(sorted(entered), ["alpha|s1", "beta|s2"])
+        self.assertFalse(both.broken, "the two fires did not overlap")
+
+    def test_a_fire_still_running_is_not_started_a_second_time(self):
+        self.release = threading.Event()
+        started = threading.Event()
+        entered = []
+
+        def slow_fire(key):
+            entered.append(key)
+            started.set()
+            self.release.wait(5)
+
+        fb.resume.fire_resume = slow_fire
+        self._arm("alpha|s1")
+        self._run(4)                # four scans over one still-pending schedule
+        self.assertTrue(started.wait(5))
+        self.assertEqual(entered, ["alpha|s1"], "exactly once, or it is a re-send")
+        self.assertIn("alpha|s1", fb.resume._firing)
+
+    def test_the_claim_is_released_when_the_fire_returns(self):
+        self.release = threading.Event()
+        self.release.set()
+        done = threading.Event()
+        fb.resume.fire_resume = lambda key: done.set()
+        self._arm("alpha|s1")
+        self._run(1)
+        self.assertTrue(done.wait(5))
+        deadline = _time.time() + 5
+        while fb.resume._firing and _time.time() < deadline:
+            _time.sleep(0.01)
+        self.assertEqual(fb.resume._firing, set(),
+                         "a key never released can never fire again")
+
+    def test_a_raising_fire_fails_the_schedule_and_still_releases(self):
+        self.release = threading.Event()
+        self.release.set()
+
+        def boom(key):
+            raise RuntimeError("tmux went away")
+
+        fb.resume.fire_resume = boom
+        self._arm("alpha|s1")
+        self._run(1)
+        deadline = _time.time() + 5
+        while fb.resume._firing and _time.time() < deadline:
+            _time.sleep(0.01)
+        self.assertEqual(fb.resume._firing, set())
+        self.assertEqual(fb._resumes["alpha|s1"]["status"], "failed")
+        self.assertIn("tmux went away", fb._resumes["alpha|s1"]["message"])
+
+    def test_a_fire_thread_is_a_named_daemon(self):
+        self.release = threading.Event()
+        seen = {}
+
+        def note(key):
+            t = threading.current_thread()
+            seen["name"], seen["daemon"] = t.name, t.daemon
+            self.release.set()
+
+        fb.resume.fire_resume = note
+        self._arm("alpha|s1")
+        self._run(1)
+        self.assertTrue(self.release.wait(5))
+        self.assertEqual(seen["name"], "resume-fire-alpha|s1")
+        self.assertTrue(seen["daemon"], "the loop must not hold up a shutdown")
 
 
 if __name__ == "__main__":

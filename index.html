@@ -375,6 +375,33 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: openChat(${escArg(k)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
 
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6).
+// The server's layer is OPT-IN PER REQUEST: no header, no protection. The phone
+// has sent these on every mutation since ios/…/Endpoint.swift; this board sent
+// nothing, so the one client sitting on the same machine as the fleet was the
+// one client whose retry could launch a second agent in a worktree.
+//
+// Minted PER TAP, never derived from the payload. One user action gets one key,
+// so a retry OF THAT ACTION replays the first answer instead of acting twice —
+// while the same brief launched again deliberately is a second tap, a second
+// key, and a second agent, which is what the user asked for. `Issued-At` is a
+// float epoch with a fixed '.'; the server refuses a key that waited longer
+// than IDEM_EXPIRE_S before arriving.
+//
+// `crypto.randomUUID` is secure-context only and this board is served over
+// plain HTTP on the tailnet, so the fallback is not decoration.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
+
 // The terminal chip for one session. It sits on the session row rather than the
 // card head so a worktree running several agents says which window is which —
 // the pairing comes from the process's CLAUDE_CONFIG_DIR matching the session's
@@ -833,7 +860,7 @@ async function loadChatMsgs() {
 // delivered to whoever holds that number now.
 async function sendTo(pid, ident, text) {
   const r = await fetch("/api/send", { method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: idemHeaders(),
     body: JSON.stringify({ ...ident, pid, text }) });
   return r.json();
 }
@@ -885,7 +912,7 @@ document.addEventListener("click", async (ev) => {
   toast(closing ? `✕ closing ${wt}…` : `✓ finishing ${wt}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ worktree: wt }) });
     const d = await r.json();
     // the server's refusal no longer says "…went to the agent 4m ago" — it sends
@@ -982,8 +1009,12 @@ function schedControls(w, s) {
 async function apiResume(path, body) {
   try {
     const r = await fetch(`/api/resume/${path}`, { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      headers: idemHeaders(), body: JSON.stringify(body) });
+    // 404 is the ONLY status that means "this server has no such route", and
+    // that is what the message below claims. An idempotency refusal (409/422)
+    // is this server answering in the board's own envelope — reading its
+    // `message` is the whole point of having sent a key.
+    if (r.status === 404) throw new Error(`HTTP ${r.status}`);
     return await r.json();
   } catch (e) {   // a pre-restart server has no /api/resume routes — say so
     return { ok: false, message: `request failed (${e.message}) — the server ` +
@@ -1296,7 +1327,7 @@ async function launchMission(missionArg) {
   st.scrollIntoView({ block: "nearest" });
   try {
     const r = await fetch("/api/dispatch", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ mission, worktree: $("mWt").value, account: $("mAcct").value,
                              model: $("mModel").value, effort: $("mEffort").value,
                              force_model: !!window._forceModel }) });

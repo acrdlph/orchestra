@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 from orchestra import notify  # noqa: E402
-from orchestra.notify import Event, compose  # noqa: E402
+from orchestra.notify import Event  # noqa: E402
+# `compose` is reached as `notify.compose` — ARCHITECTURE §4.5, TestMockability
 
 
 def _ev(type_, session_id=None, **kw):
@@ -24,7 +25,7 @@ def _ev(type_, session_id=None, **kw):
 class TestReplyCategoryOnTheWire(unittest.TestCase):
 
     def cat(self, type_, session_id=None):
-        return compose(_ev(type_, session_id=session_id))["payload"]["aps"]["category"]
+        return notify.compose(_ev(type_, session_id=session_id))["payload"]["aps"]["category"]
 
     def test_answerable_with_a_session_gets_the_reply_category(self):
         self.assertEqual(self.cat("session.needs_answer", "sid-abc"), "ORC_REPLY")

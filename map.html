@@ -173,6 +173,22 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // the surrounding quotes; esc() then makes the result safe as an HTML attribute
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: tipFocus(${escArg(n)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
+// the server's layer is opt-in per request, so a mutation without these headers
+// is a mutation a retry can run twice. Minted PER TAP, never from the payload;
+// `crypto.randomUUID` is secure-context only and this page is served over plain
+// HTTP on the tailnet. index.html carries the long form of this note.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
 const C = { green:"#87b386", accent:"#d97757", accent2:"#e8a87c", cyan:"#7fb3c8",
             yellow:"#d4b06a", fg:"#e8e6e3", muted:"#8a8784", muted2:"#6a6764",
             border:"#2a2a2a", bg:"#0d0d0d" };
@@ -429,7 +445,7 @@ async function tipFinish(btn, wtName) {
   toast(`✓ finishing ${wtName}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ worktree: wtName }) });
     const d = await r.json();
     toast((d.ok ? "✓ " : "✗ ") + d.message);

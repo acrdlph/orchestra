@@ -253,9 +253,31 @@ class Handler(BaseHTTPRequestHandler):
         flag that tells it: once a status line is committed, a second one over
         the top of it would be garbage, so the guard leaves the connection to
         close instead.
+
+        It is also the ONE choke point for the headers that belong on every
+        answer, which is why they are written here and not at the nine
+        `send_header` blocks below — nine places to forget is nine places that
+        will be forgotten. Both are free:
+
+        * `nosniff` — this server answers with agent-authored text (a
+          transcript, a mission brief, an error message quoting either). A
+          browser allowed to sniff a JSON body as HTML runs whatever an agent
+          happened to write, at the board's own full-privilege origin.
+        * `no-referrer` — a tailnet host and port are an address, and a
+          `Referer` hands it to whatever the user clicks through to next.
+
+        DELIBERATELY NOT CSP, tonight. docs/mobile/ARCHITECTURE.md:917 lists it
+        beside these two, and it is the one that cannot ship with them: all five
+        pages are pervasively inline — every handler an `onclick` attribute,
+        every style a `<style>` block, `escArg` written precisely because that
+        is how they are built — so any policy strict enough to be worth sending
+        breaks the whole board. That refactor is deferred whole, on purpose,
+        rather than shipped as a header nobody can enforce.
         """
         self._answered = True
         super().send_response(*args, **kwargs)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
 
     def _json(self, status, payload):
         """One JSON answer with a real status code, then hang up.
@@ -403,15 +425,39 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps(dispatch.read_dispatch_log()).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/dispatch/status"):
-                m = re.search(r"job=([\w-]+)", self.path)
-                body = json.dumps(dispatch.dispatch_status(m.group(1)) if m
-                                  else {"ok": False, "error": "no job"}).encode()
+                job = (_query(self.path).get("job") or "").strip()
+                if not job:
+                    # TWO different failures used to share one answer. A missing
+                    # or empty `job=` is the CLIENT's mistake and is now a 400;
+                    # a well-formed id this server has never heard of keeps its
+                    # 200 `{"ok":false,"error":"unknown job"}`, because that is a
+                    # real answer about a real job (the ring holds twenty, and a
+                    # restart empties it) and both boards branch on that body
+                    # today. Answering the broken URL with the same 200 left a
+                    # poller re-asking a question it could never get right.
+                    return self._json(400, {"ok": False, "error": "no job",
+                                            "message": "need a job id"})
+                body = json.dumps(dispatch.dispatch_status(job)).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/chat"):
-                qa = re.search(r"account=([^&]+)", self.path)
-                qs = re.search(r"sid=([0-9a-fA-F-]+)", self.path)
-                result = chat.read_chat(qa.group(1), qs.group(1)) if qa and qs else \
-                    {"ok": False, "error": "need account & sid"}
+                q = _query(self.path)
+                account, sid = q.get("account"), q.get("sid") or ""
+                # `account` is a Claude-home LABEL — `~/.claude-side project` is
+                # `side project` — and the raw `account=([^&]+)` match handed
+                # `side%20project` to a comparison against the decoded label,
+                # which no account could ever equal. So the chat drawer was
+                # simply blank for anyone whose account name had a space, a `+`
+                # or a non-ASCII character. `_query` is the decoder /api/focus
+                # already uses for exactly this reason.
+                #
+                # The sid's shape is now asserted rather than merely implied:
+                # the old regex refused a slash or a dot as a side effect of
+                # matching, and `chat.read_chat` feeds the value straight into a
+                # glob under the account's projects dir. Decoding removes the
+                # accident, so the rule is written down.
+                result = chat.read_chat(account, sid) \
+                    if account and re.fullmatch(r"[0-9a-fA-F-]+", sid) \
+                    else {"ok": False, "error": "need account & sid"}
                 body = json.dumps(result).encode()
                 ctype = "application/json"
             elif _v1_match(self.path, "/api/v1/events"):
