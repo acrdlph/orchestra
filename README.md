@@ -242,6 +242,35 @@ python3 -m orchestra [--root DIR]... [--pattern REGEX] [--home DIR]...
 | `--idle-s S` | 30.0 | seconds between **safety-net** sweeps; changes arrive as events (see below) |
 | `--demo` | — | fictional data (screenshots, kicking the tires) |
 
+### Keeping it running (launchd, macOS)
+
+`./start.sh` is for a board you open and close. To have one waiting whenever you
+log in, `contrib/sh.orchestra.server.plist` is a **user LaunchAgent** template —
+it runs as you, in your GUI session, which is what reading `~/.claude*` and
+scripting Terminal.app both need. Replace the four CAPITALISED placeholders
+(python3, the checkout, your code root, your home — launchd expands `~` nowhere),
+then:
+
+```bash
+cp contrib/sh.orchestra.server.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/sh.orchestra.server.plist
+launchctl kickstart -k gui/$UID/sh.orchestra.server   # restart after an edit
+launchctl bootout gui/$UID/sh.orchestra.server        # stop and unload
+```
+
+`bootstrap`/`bootout`, not `load`/`unload`: the legacy pair still works and
+still lies — it reports success for a job it never started. `RunAtLoad` +
+`KeepAlive` keep the server up; stdout and stderr both land in
+`~/Library/Logs/orchestra.log`.
+
+**`--tailnet` fails closed at boot, and that is the point.** It *detects* the
+Tailscale address rather than trusting a pasted one, so if the daemon has not
+come up yet there is no address to bind and the server exits saying so rather
+than binding something else. At login that race is normal. `KeepAlive` is
+unconditional for exactly this reason — launchd retries every
+`ThrottleInterval` (30 s in the template) until Tailscale is up, and the log
+shows one refusal per attempt until it is.
+
 Persistent settings go in `orchestra.config.json` next to the script
 (gitignored). **Copy `orchestra.config.example.json` to start** — it lists every
 key with placeholder values, including the `apns_*` keys for iOS push:
