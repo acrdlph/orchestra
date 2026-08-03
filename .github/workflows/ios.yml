@@ -1,0 +1,50 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# a newer push to the same ref cancels an in-flight run. The group is deliberately
+# not the `ci-` one: the two workflows of a single push must not cancel each other.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    # the image carries 26.0.1 through 26.6 and defaults to 26.5. Pin the version
+    # the app is developed against: SWIFT_TREAT_WARNINGS_AS_ERRORS is YES in the
+    # project, so a compiler that emits one new warning fails the build on its own
+    # and the Xcode version is not an implementation detail. Bump when the image
+    # stops shipping 26.6.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      # makes a stale pin fail loudly instead of as a confused xcodebuild error
+      - name: Xcode version
+        run: xcodebuild -version
+
+      # models, transport classification, rules, formatters — headless on macOS,
+      # no simulator and no signing. ios/Package.swift says what it leaves out.
+      - name: Run tests
+        working-directory: ios
+        run: swift test
+
+      # the app target. `generic/platform=iOS Simulator` builds against the
+      # simulator SDK without naming a device, so nothing has to be booted and the
+      # runtimes the image happens to carry do not matter. The project ad-hoc signs
+      # (CODE_SIGN_IDENTITY = "-"), so there is no team and no secret to inject.
+      - name: Build the app
+        run: |
+          xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
+                     -configuration Debug \
+                     -destination 'generic/platform=iOS Simulator' \
+                     -derivedDataPath "$RUNNER_TEMP/orc-dd" build
