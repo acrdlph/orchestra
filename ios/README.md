@@ -1,4 +1,4 @@
-# orchestra for iOS — phases 1–4
+# orchestra for iOS — phases 1–5
 
 A native SwiftUI client for the orchestra board.
 
@@ -30,13 +30,24 @@ A native SwiftUI client for the orchestra board.
   "Phase 4 — push" below for what only an APNs key, and only a physical device,
   can add.
 
+* **Phase 5** gave the app a fleet of its own. orchestra is a client for a server
+  the user runs on their own Mac, so opened with nothing paired it is a pairing
+  screen and nothing else — and *"reviewer opened it, saw a screen it could not
+  get past, rejected it"* is the standard way a companion app fails App Store
+  guideline 2.1. `explore the demo fleet`, one tap from the first screen and in
+  front of the Face ID gate, runs the whole product on six invented worktrees:
+  the board, worktree detail, a real conversation, the branch map, usage limits,
+  notification preferences. No server, no socket, no network, nothing written.
+  Every mutation refuses in the server's own voice and every control stays
+  visible while it does. See "Phase 5 — the demo fleet" below.
+
 ## Build and run it — the only way this is verified
 
 Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 96 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 184 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -73,7 +84,23 @@ SIMCTL_CHILD_ORC_SCREEN=resume:ConfidAi7/<sid>      xcrun simctl launch booted s
 SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAi7/account4/<sid> \
 SIMCTL_CHILD_ORC_SEND='reply with exactly the words: the phone reached you' \
      xcrun simctl launch booted sh.orchestra.app
+
+# 8. phase 5 — the demo fleet, with no server anywhere
+SIMCTL_CHILD_ORC_SCREEN=demo                       xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=demo:wt:search-index       …
+SIMCTL_CHILD_ORC_SCREEN=demo:chat:search-index/main/9c1f4a2e-7b30-4c58-9a11-2d6e83f0b415  …
+SIMCTL_CHILD_ORC_SCREEN=demo:limits                …
+SIMCTL_CHILD_ORC_SCREEN=demo:map                   …
+SIMCTL_CHILD_ORC_SCREEN=demo:mission               …
+SIMCTL_CHILD_ORC_SCREEN=demo:finish:checkout-flow  …
+SIMCTL_CHILD_ORC_SCREEN=demo:resume:release-notes/a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2  …
 ```
+
+`demo` is both a route and a **prefix**: `ORC_SCREEN=demo` lands on the demo
+board, and `demo:<anything>` enters the demo and then lands exactly where the
+bare route would. It exists because the screenshot job's whole subject — the
+screen the store images and the review notes are about — otherwise needs a
+finger.
 
 `ORC_SEND` is the third `#if DEBUG` seam and the sharpest one: it takes text
 through exactly `ChatStore.send` — the same call the arrow button makes — because
@@ -113,6 +140,9 @@ ios/
     │             OrchestraError · Keychain
     ├── Rules/    Triage
     ├── Format/   RelativeTime · TextRules
+    ├── Demo/     DemoClock · DemoFleet · DemoLimits · DemoChat
+    │             DemoTopology · DemoPayload · DemoCopy   (NOT under UI —
+    │             it is data and rules, so `swift test` decodes all of it)
     ├── Store/    FleetStore · FleetApplier · ChatStore · LimitsStore
     │             PairingStore                    (@MainActor @Observable)
     └── UI/       Palette · Typography · StatusStyle · ConnectionBar
@@ -685,6 +715,123 @@ on 2026-07-23.
   by the seams above and verified against the real server, which proves
   everything except the pixels of the banner. The authorization request itself is
   screenshotted (the real system prompt fires on launch).
+
+## Phase 5 — the demo fleet
+
+`docs/mobile/APPSTORE.md` §8 row 1 names the likeliest rejection by a wide
+margin: a reviewer with no Mac opens a companion app, sees a pairing screen,
+cannot proceed. The answer is one tap on the first screen — **`explore the demo
+fleet`**, that exact string, because the review notes and the screenshot job both
+name it.
+
+### What it is, and what it is deliberately not
+
+* **It is the real app, told a different board.** The canned payload goes in as
+  *bytes* through `StreamFrame.decode` → `FleetApplier.apply` → `FleetStore`,
+  which is the exact path an `event: state` frame off the socket takes. Chat goes
+  through `ChatStore.load` and renders `ChatBubble`; limits go through
+  `LimitsReport`'s decoder; the map through `Topology`'s. There is no second
+  rendering anywhere, and `free_worktrees` on the demo board is *derived by the
+  applier* from the cards — a test asserts that, because it is the cheapest proof
+  the frame really went through it.
+* **It is Swift string literals, not a bundle resource.** `Package.swift` builds
+  `Sources/Orchestra` as one target with warnings as errors, and a stray
+  non-source file in that tree is a build problem rather than a resource. A
+  literal is also the only form `swift test` can decode without a bundle — and
+  this payload *must* be tested, because a demo board that fails to decode fails
+  on a stranger's phone, during review, with nobody watching.
+* **It is not a smaller app.** Every mutation — send, dispatch, finish, arm,
+  disarm, resume-now, push preferences — is **visible and disabled with the
+  reason attached**, never hidden. A reviewer is here to see that the app can act
+  on a fleet.
+* **Nothing is ever faked.** Refusals come from the *stores*, not only from the
+  views: `ChatStore.send` returns `.refused`, `ActionsStore.launch` produces the
+  `.refused` dispatch phase (the only one that means *nothing was launched*), and
+  the three resume paths share one refusal. The disabled button is the courtesy;
+  the store is the guarantee. A test asserts no demo copy carries a `✓`.
+
+### The two rules that make it not look dead
+
+**Ages are rewritten at load.** Every timestamp in the payloads is written
+against a fixed fiction — `DemoClock.base`, 2027-01-15T08:00:00Z — and moved onto
+the reader's own clock the instant the demo opens. A canned board with absolute
+epochs baked in reads `3d ago` on every row within a week of shipping, and a
+board where nothing has happened for three days is not a demonstration of a live
+fleet. The rule is deliberately not a list of key names: **any number inside a
+30-day window around `base` is a demo timestamp, and so is any ISO-8601 string
+that parses to an instant inside it.** A key list goes stale the first time the
+server grows a field; the window cannot, because nothing else on this wire is
+near 1.8 × 10⁹ — pids are six digits, percentages and cpu under 100, dirty counts
+under a thousand. Two consequences worth stating: rewritten instants are **whole
+seconds** (`git.commit.ts` is an `Int` and a fractional double there is a
+`typeMismatch` that takes the whole board with it), and JSON booleans bridge to
+`NSNumber` but sit nowhere near the band, so they pass through with their
+identity intact. Both are pinned by tests.
+
+**The connection bar gets its own state.** `LinkState.demo` is a real case, not a
+borrowed `.live` — `live v82` over a canned board is precisely the lie the whole
+strip exists to prevent. It reads `demo fleet · nothing here is real`, `isLive`
+is false, the version chip and the retry arrow are gone, and in their place is
+`leave the demo`. `staleness` returns `.fresh` for it forever, because every
+other non-live state dims the board past the silence budget — correct for a dead
+socket, and it would tell a reviewer the app is broken.
+
+### The gate, and the way out
+
+The demo sits **in front of** the biometric gate: it has no token, no server and
+nothing to protect, and App Review's device has no enrolled face. `RootView`
+tests `pairing.isPaired` **first**, and that ordering is the guarantee — even if
+something handed the app both states at once, a real board still lands in the
+gated branch. The gate on the paired board is untouched.
+
+Two ways out, on every tab: `leave the demo` on the connection strip, and the
+board's overflow menu (where `Unpair this device` lives on a real board). The
+Server tab's destructive button becomes `leave the demo and pair your Mac`,
+because that is where somebody looks for "how do I connect a real Mac". And the
+demo never blocks the real flow: scanning the Mac's QR with the system camera
+while the demo is open drops the demo and pairs.
+
+### The fleet itself
+
+Six worktrees of a fictional storefront — `search-index`, `payments-webhook`,
+`checkout-flow`, `api-gateway`, `release-notes`, `design-tokens` — one card in
+each of the board's five sections, all six session statuses, ages from nine
+seconds to twenty-two hours, and a conversation for every one of the eight
+sessions. It also carries, on purpose, the three wire edges this client learned
+the hard way, so the demo exercises the fixes rather than a happy path: a session
+with **no `turn_ended` key at all**, a worktree with **null `ahead`/`behind`**
+(rendered `no upstream`, never `↑0`), and `tool_running` present only when true.
+The limited card and the exhausted account on the Limits screen name the *same*
+reset instant, and the armed auto-resume is due a minute after it — a test pins
+both, because a demo that teaches a wrong join is worse than no demo.
+
+### The defect a screenshot found, again
+
+`ORC_SCREEN=demo:limits` **landed on the board.** The tab seam
+(`tab = route.tab`) sat below the new `guard !model.isDemo` in the paired view's
+`.task`, so entering the demo returned before the tab was ever selected.
+Everything compiled, the demo was correct, and the one seam the screenshot job
+depends on quietly did nothing. Moved above the guard. The same run found the
+connection strip truncating its own sentence to `nothing here is re…` — the one
+line on that bar that has to be readable — fixed by letting the demo caption take
+two lines, which the bar already handles because its height is *measured*.
+
+### Not done in phase 5, and honest about it
+
+- **`docs/mobile/APPSTORE.md` is not updated by this branch.** It does not exist
+  in this worktree (it lands from another branch), and §7's review-notes block is
+  a counted 3,938 characters — editing it blind would break the count. The
+  feature matches what §7 already promises: the entry point is on the first
+  screen, below the pairing options, labelled exactly `explore the demo fleet`,
+  and it sits before the Face ID gate.
+- **Pairing *from inside* the demo has no in-place form.** Leaving the demo is
+  one tap and restores the real pairing screen intact, and a QR scanned by the
+  system camera pairs straight through — so the demo never blocks the real flow.
+  What it does not have is a pairing form rendered over the demo board, which
+  would be a second copy of the one screen that must not have two.
+- **Push cannot be demonstrated at all**, and the notification preferences say
+  so: the sender is the user's own Mac. The screen renders in full and every
+  control on it is disabled with the refusal at the top.
 
 ### Not done, and honest about it
 

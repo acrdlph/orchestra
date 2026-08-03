@@ -24,8 +24,15 @@ public struct NotificationSettingsView: View {
     @State private var busy = false
     @Environment(\.openURL) private var openURL
 
-    public init(push: PushStore) {
+    /// The demo fleet has no Mac, and **the user's own Mac is the push sender**
+    /// — so every control here is real and none of it can go anywhere. The
+    /// screen renders in full, disabled, with the reason at the top: this is
+    /// the one preferences surface the review notes name as untestable in demo.
+    private let isDemo: Bool
+
+    public init(push: PushStore, isDemo: Bool = false) {
         self.push = push
+        self.isDemo = isDemo
         let settings = push.settings
         _working = State(initialValue: settings)
         _quietFrom = State(initialValue: Self.date(from: settings.quietHours.from))
@@ -37,14 +44,26 @@ public struct NotificationSettingsView: View {
             Palette.canvas.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
+                    if isDemo {
+                        ServerSays(DemoCopy.refusal, tone: .refusal)
+                    }
                     if push.authorizationGranted == false {
                         deniedBanner
                     }
-                    events
-                    quietHours
-                    delivery
-                    nudge
-                    diagnostics
+                    Group {
+                        events
+                        quietHours
+                        delivery
+                        nudge
+                        diagnostics
+                    }
+                    // Every toggle, stepper and button below writes to the
+                    // server. One `.disabled` around the lot is the only form
+                    // of that rule that cannot be forgotten the next time a
+                    // control is added — and it is on the CONTENT, not on the
+                    // ScrollView, so the screen still scrolls and can still be
+                    // read.
+                    .disabled(isDemo)
                     Color.clear.frame(height: Space.xxl)
                 }
                 .padding(.horizontal, Space.lg)

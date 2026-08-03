@@ -18,12 +18,17 @@ public struct ConnectionBar: View {
     private let staleness: Staleness
     private let version: Int?
     private let retry: () -> Void
+    /// The way out of the demo, offered from the one strip that is on every tab.
+    /// Nil in every real session.
+    private let exitDemo: (() -> Void)?
 
     public init(link: LinkState, staleness: Staleness, version: Int?,
+                exitDemo: (() -> Void)? = nil,
                 retry: @escaping () -> Void) {
         self.link = link
         self.staleness = staleness
         self.version = version
+        self.exitDemo = exitDemo
         self.retry = retry
     }
 
@@ -33,6 +38,9 @@ public struct ConnectionBar: View {
         case .connecting, .idle: Palette.textTertiary
         case .reconnecting, .refused: Palette.statusLimit
         case .offline, .unauthorized: Palette.statusNeeds
+        // Its own hue, and deliberately not the working green: the one thing
+        // this strip must never say about a canned board is that it is live.
+        case .demo: Palette.statusFree
         }
     }
 
@@ -58,7 +66,13 @@ public struct ConnectionBar: View {
                     Text(link.caption)
                         .font(OrcFont.status)
                         .foregroundStyle(hue)
-                        .lineLimit(1)
+                        // The demo caption is a sentence rather than a word and
+                        // it truncated to `nothing here is re…` on the first
+                        // screenshot — which is the one line on this bar that
+                        // must be readable. The bar's height is MEASURED
+                        // (`bottomAccessoryHeight`), so growing a second line
+                        // costs nothing that is not already handled.
+                        .lineLimit(link.isDemo ? 2 : 1)
                     if let version, link.isLive {
                         Text(verbatim: "v\(version)")
                             .font(OrcFont.meta)
@@ -73,7 +87,20 @@ public struct ConnectionBar: View {
                 }
             }
             Spacer(minLength: 0)
-            if !link.isLive || staleness.isStale {
+            if let exitDemo, link.isDemo {
+                // In place of the retry arrow, which would be offering to
+                // reconnect something that was never connected. This is the way
+                // out that is on every tab — the board's menu has the other.
+                Button(action: exitDemo) {
+                    Text(DemoCopy.exit)
+                        .font(OrcFont.status)
+                        .foregroundStyle(Palette.statusFree)
+                        .padding(.horizontal, Space.sm)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(DemoCopy.exit)
+            } else if !link.isLive || staleness.isStale {
                 Button(action: retry) {
                     Image(systemName: "arrow.clockwise")
                         .font(OrcFont.status)

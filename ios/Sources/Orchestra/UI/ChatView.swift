@@ -55,8 +55,13 @@ public struct ChatView: View {
         self.sid = sid
         self.fleet = store
         self.autoSend = autoSend
+        // The demo's transcript for this session, if this is the demo board. It
+        // is read from the board's own store because that is what this screen is
+        // already given, and it goes into the SAME `ChatStore` a real
+        // conversation uses — same bubbles, same receipts, same auto-follow.
         _chat = State(initialValue: ChatStore(client: client, worktree: worktree,
-                                              account: account, sid: sid))
+                                              account: account, sid: sid,
+                                              demo: store.demo?.chat(sid: sid)))
     }
 
     private var card: Worktree? {
@@ -271,9 +276,16 @@ public struct ChatView: View {
                 .disabled(!sendEnabled)
                 .accessibilityLabel("send this reply")
             }
-            Text("newlines become spaces on the way to the terminal")
+            // **Disabled with the reason attached, never hidden.** A reviewer
+            // has to see that this app replies to agents; a composer removed in
+            // demo mode would be showing them a smaller app than the one they
+            // are reviewing. `ChatStore.send` refuses too — this line is the
+            // courtesy, that is the guarantee.
+            Text(fleet.isDemo
+                 ? DemoCopy.refusal
+                 : "newlines become spaces on the way to the terminal")
                 .font(OrcFont.meta)
-                .foregroundStyle(Palette.textDisabled)
+                .foregroundStyle(fleet.isDemo ? Palette.statusLimit : Palette.textDisabled)
         }
         .padding(.horizontal, Space.lg)
         .padding(.top, Space.sm)
@@ -281,7 +293,8 @@ public struct ChatView: View {
     }
 
     private var sendEnabled: Bool {
-        !chat.sending && !WireText.collapsed(draft).isEmpty && session != nil
+        !fleet.isDemo && !chat.sending
+            && !WireText.collapsed(draft).isEmpty && session != nil
     }
 
     private func refusal(_ message: String) -> some View {

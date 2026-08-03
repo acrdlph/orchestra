@@ -29,22 +29,45 @@ public final class TopologyStore {
 
     private let client: OrchestraClient
     private var inFlight: Task<Void, Never>?
+    /// True while the demo fleet is on screen. The map is one tap from the demo
+    /// board and a reviewer takes that tap; a transport failure there is the app
+    /// failing in front of the person deciding whether it works.
+    private var isDemo = false
 
     public init(client: OrchestraClient) {
         self.client = client
+    }
+
+    public func loadDemo(_ canned: Topology) {
+        inFlight?.cancel()
+        inFlight = nil
+        isDemo = true
+        topology = canned
+        loadedAt = Date()
+        lastError = nil
+        phase = .loaded
+    }
+
+    public func exitDemo() {
+        isDemo = false
+        topology = nil
+        loadedAt = nil
+        lastError = nil
+        phase = .cold
     }
 
     /// Fetch once, on appear. Idempotent: a second appear while one is in flight,
     /// or after data already loaded, does nothing — that is what keeps a
     /// re-entered screen from re-paying the git sweep.
     public func load() {
-        guard topology == nil, inFlight == nil else { return }
+        guard !isDemo, topology == nil, inFlight == nil else { return }
         fetch()
     }
 
     /// Pull-to-refresh. Always fetches; awaited so `.refreshable` can hold the
     /// spinner until the answer lands.
     public func refresh() async {
+        guard !isDemo else { return }
         inFlight?.cancel()
         inFlight = nil
         await fetchAwaiting()

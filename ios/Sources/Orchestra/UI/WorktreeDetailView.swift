@@ -152,8 +152,17 @@ public struct WorktreeDetailView: View {
             PrimaryAction(pending ? "Close this worktree" : "Finish this worktree",
                           symbol: pending ? "xmark" : "checkmark",
                           tint: pending ? Palette.statusNeeds : Palette.statusLimit,
-                          enabled: !actions.isBusy(.finish(worktree: name), now: now)) {
+                          enabled: !store.isDemo
+                                   && !actions.isBusy(.finish(worktree: name), now: now)) {
                 finishing = true
+            }
+            // Disabled with the reason under it rather than absent: the closeout
+            // is one of the four things this app can make a fleet do, and a
+            // reviewer has to be able to see that it exists.
+            if store.isDemo {
+                Text(DemoCopy.refusal)
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.statusLimit)
             }
         }
     }
@@ -400,10 +409,11 @@ public struct WorktreeDetailView: View {
                             : "Resume at \(resets.map { RelativeTime.clock($0) } ?? "—")",
                       systemImage: "play.fill")
                     .font(OrcFont.meta)
-                    .foregroundStyle(ready && reachable ? Palette.statusFree : Palette.textDisabled)
+                    .foregroundStyle(ready && reachable && !store.isDemo
+                                     ? Palette.statusFree : Palette.textDisabled)
                     .frame(minHeight: 40)
             }
-            .disabled(!ready || !reachable
+            .disabled(store.isDemo || !ready || !reachable
                       || actions.isBusy(.send(sid: session.sid), now: now))
         }
         .padding(.horizontal, Space.md)

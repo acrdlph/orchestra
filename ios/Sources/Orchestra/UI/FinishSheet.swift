@@ -121,8 +121,9 @@ public struct FinishSheet: View {
                        + "and push.", tone: .unknown)
         }
 
+        if fleet.isDemo { ServerSays(DemoCopy.refusal, tone: .refusal) }
         PrimaryAction("Send the closeout brief", symbol: "paperplane",
-                      tint: Palette.statusLimit, enabled: !fired) {
+                      tint: Palette.statusLimit, enabled: !fired && !fleet.isDemo) {
             fired = true
             actions.finish(worktree: card.name, step: .brief)
         }
@@ -154,8 +155,9 @@ public struct FinishSheet: View {
             .font(OrcFont.bodyCompact)
             .foregroundStyle(Palette.textSecondary)
 
+        if fleet.isDemo { ServerSays(DemoCopy.refusal, tone: .refusal) }
         PrimaryAction("Verify and close", symbol: "xmark",
-                      tint: Palette.statusNeeds, enabled: !fired) {
+                      tint: Palette.statusNeeds, enabled: !fired && !fleet.isDemo) {
             fired = true
             actions.finish(worktree: card.name, step: .close)
         }
