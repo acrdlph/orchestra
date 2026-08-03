@@ -32,7 +32,10 @@ sys.path.insert(0, str(ROOT))
 
 import orchestra as fb  # noqa: E402
 from orchestra import notify, push, hooks  # noqa: E402
-from orchestra.notify import (project, derive, Notifier, EventLog, Preferences,
+# `project` and `derive` are reached as `notify.…`: a module-level from-import
+# of a function freezes it and defeats the suite's mocking seam (ARCHITECTURE
+# §4.5, enforced by tests/test_zero_deps.py TestMockability).
+from orchestra.notify import (Notifier, EventLog, Preferences,
                               Budget, Service)  # noqa: E402
 
 
@@ -79,7 +82,7 @@ class TestDiedDerivation(unittest.TestCase):
     def test_a_recently_working_session_that_vanishes_dirty_dies(self):
         p1 = proj(sessions={"s1": sess("working", dirty=True)})
         p2 = proj()   # gone
-        evs = derive(p1, p2, now=1.0)
+        evs = notify.derive(p1, p2, now=1.0)
         self.assertEqual([e.type for e in evs], ["session.died"])
         self.assertEqual(evs[0].worktree, "wt")
         self.assertEqual(evs[0].dedupe_key, "session.died|s1")
@@ -89,33 +92,33 @@ class TestDiedDerivation(unittest.TestCase):
         ends is the normal end of a turn, not a crash."""
         p1 = proj(sessions={"s1": sess("working", dirty=False)})
         p2 = proj()
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
     def test_ending_dirty_dies_too(self):
         p1 = proj(sessions={"s1": sess("blocked", dirty=True)})
         p2 = proj(sessions={"s1": sess("ended", dirty=True)})
-        self.assertEqual([e.type for e in derive(p1, p2, now=1.0)],
+        self.assertEqual([e.type for e in notify.derive(p1, p2, now=1.0)],
                          ["session.died"])
 
     def test_a_still_present_session_does_not_die(self):
         p1 = proj(sessions={"s1": sess("working", dirty=True)})
         p2 = proj(sessions={"s1": sess("working", dirty=True)})
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
     def test_an_idle_session_that_vanishes_is_not_a_death(self):
         """Only a RECENTLY-alive session's disappearance is a death; a session
         already `waiting`/idle that goes away was not crashed mid-work."""
         p1 = proj(sessions={"s1": sess("waiting", dirty=True)})
         p2 = proj()
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
     def test_it_fires_exactly_once_across_the_next_sweep(self):
         """After the death sweep, `prev` no longer holds the session, so it is
         not re-derived every subsequent quiet sweep."""
         p1 = proj(sessions={"s1": sess("working", dirty=True)})
         p2 = proj()
-        first = derive(p1, p2, now=1.0)
-        second = derive(p2, p2, now=2.0)
+        first = notify.derive(p1, p2, now=1.0)
+        second = notify.derive(p2, p2, now=2.0)
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
 
@@ -127,7 +130,7 @@ class TestProjectionDirtyGate(unittest.TestCase):
             cards = {"wt": {"name": "wt", "availability": "busy",
                             "git": {"dirty": 3, "ahead": 0},
                             "sessions": [{"sid": "s1", "status": "working"}]}}
-        p = project(Snap())
+        p = notify.project(Snap())
         self.assertTrue(p["sessions"]["s1"]["dirty"])
 
     def test_unlanded_counts_as_dirty(self):
@@ -135,14 +138,14 @@ class TestProjectionDirtyGate(unittest.TestCase):
             cards = {"wt": {"name": "wt", "availability": "busy",
                             "git": {"dirty": 0, "ahead": 2},
                             "sessions": [{"sid": "s1", "status": "working"}]}}
-        self.assertTrue(project(Snap())["sessions"]["s1"]["dirty"])
+        self.assertTrue(notify.project(Snap())["sessions"]["s1"]["dirty"])
 
     def test_a_clean_landed_worktree_is_not_dirty(self):
         class Snap:
             cards = {"wt": {"name": "wt", "availability": "busy",
                             "git": {"dirty": 0, "ahead": 0},
                             "sessions": [{"sid": "s1", "status": "working"}]}}
-        self.assertFalse(project(Snap())["sessions"]["s1"]["dirty"])
+        self.assertFalse(notify.project(Snap())["sessions"]["s1"]["dirty"])
 
 
 # --------------------------------------------------------------- F8 / F1 QC
