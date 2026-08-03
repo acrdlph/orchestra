@@ -54,8 +54,15 @@ that spend money. That raises the bar for everything that can reach it.
    reproducibly by `ios/icon/render_icon.swift`. Looked at on the home screen.
 6. **iOS CI.** **Built** — `.github/workflows/ios.yml` runs `swift test` + a simulator
    `xcodebuild` on macos-26, warnings-as-errors honoured, its own concurrency group.
-7. **Bundle IBM Plex Mono.** In progress this same push — the brand face, with a whole-face
-   fallback to the system mono if a weight fails to resolve.
+7. **Bundle IBM Plex Mono.** **Done.** Four faces (Regular / Medium / SemiBold / Bold, ~680 KB)
+   ship in `ios/App/Fonts/` with `OFL.txt`; `UI/Typography.swift` resolves them from
+   `\.legibilityWeight`, so Bold Text moves the machine voice a weight instead of leaving it thin.
+   No call site changed. `Font.custom` substitutes silently for a face that will not resolve, so
+   the app checks all four with `UIFont(name:)` at launch — `assertionFailure` in DEBUG, and in
+   Release the whole ramp (never a single glyph) falls back to the system monospaced design.
+   Two marks moved because Plex has no glyph for them: `Δ` U+0394 → `∆` U+2206, `✕` U+2715 → the
+   `xmark` SF Symbol. Verified by looking at the pairing screen, the live board and the server
+   screen on an iPhone 17 Pro Max simulator, plus `FontBundleTests` on every `swift test`.
 
 ## Tier 3 — The phone superpowers (specced in UX.md, not built)
 

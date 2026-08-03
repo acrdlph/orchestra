@@ -96,7 +96,7 @@ struct MapDetailSheet: View {
             stat("+\(branch.ahead)", "ahead", Palette.textPrimary)
             stat("↓\(branch.behind)", "behind",
                  BranchMap.debtTier(branch.behind).map(tierHue) ?? Palette.textTertiary)
-            stat("Δ\(branch.dirty)", "uncommitted",
+            stat("∆\(branch.dirty)", "uncommitted",
                  branch.dirty > 0 ? Palette.statusLimit : Palette.textTertiary)
         }
     }

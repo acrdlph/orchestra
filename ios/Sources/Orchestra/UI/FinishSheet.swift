@@ -180,7 +180,7 @@ public struct FinishSheet: View {
                            hue: card.liveProcs.isEmpty ? Palette.textTertiary
                                                        : Palette.statusWorking)
             ConsequenceRow(card.git.dirty == 0 ? "clean tree"
-                                               : "Δ\(card.git.dirty) uncommitted",
+                                               : "∆\(card.git.dirty) uncommitted",
                            arrow: "doc.badge.ellipsis",
                            hue: card.git.dirty == 0 ? Palette.textTertiary
                                                     : Palette.statusLimit)
