@@ -1,11 +1,11 @@
-"""Fixes for orchestra.server — the legacy GET chain reads a DECODED query.
+"""Fixes for orchestra.server — the legacy GET chain, and the headers on every answer.
 
 Same shape as `tests/test_fixes_server.py`: `Handler` is driven DIRECTLY, on an
 instance built with `__new__` (so `parse_request`/`auth.check` never runs — every
 test here is about what the handler does with a request the door already let in)
 and a `BytesIO` in place of the wire.
 
-Two defects, each of which passes every existing test:
+Three defects, each of which passes every existing test:
 
   Q1  `/api/chat` matched its parameters out of the RAW path
       (`account=([^&]+)`), so an account label containing a space, a `+` or a
@@ -17,6 +17,8 @@ Two defects, each of which passes every existing test:
       broken URL could not tell "you asked wrong" from "that job is gone" and
       polled forever. The missing/empty case is now a 400; the unknown-but-
       well-formed case keeps its 200 body, which both boards branch on.
+  Q3  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` were
+      on no response at all.
 """
 
 import http.client
@@ -50,6 +52,17 @@ def _handler(path, body=b"", command="GET", **headers):
 
 def _status(h):
     return int(h.wfile.getvalue().split(b"\r\n", 1)[0].split(b" ")[1])
+
+
+def _headers(h):
+    """The response headers, lowercased keys -> value."""
+    head = h.wfile.getvalue().split(b"\r\n\r\n", 1)[0].decode("latin-1")
+    out = {}
+    for line in head.split("\r\n")[1:]:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            out[k.strip().lower()] = v.strip()
+    return out
 
 
 def _body(h):
@@ -159,6 +172,70 @@ class TestDispatchStatusValidatesItsJob(unittest.TestCase):
         h.do_GET()
         self.assertEqual(_status(h), 200)
         self.assertTrue(_body(h)["ok"])
+
+
+# ------------------------------------------------------ Q3: common headers
+
+class TestSecurityHeadersOnEveryAnswer(unittest.TestCase):
+    """`send_response` is the one choke point every answer passes through —
+    including `send_error` — which is why the two headers live there."""
+
+    WANT = {"x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer"}
+
+    def _assert_headers(self, h):
+        got = _headers(h)
+        for key, val in self.WANT.items():
+            self.assertEqual(got.get(key), val,
+                             f"{key} missing from a {_status(h)}")
+
+    def test_on_a_plain_200(self):
+        h = _handler("/api/health")
+        h.do_GET()
+        self.assertEqual(_status(h), 200)
+        self._assert_headers(h)
+
+    def test_on_a_404_from_send_error(self):
+        h = _handler("/nope")
+        h.do_GET()
+        self.assertEqual(_status(h), 404)
+        self._assert_headers(h)
+
+    def test_on_a_400_from_the_json_writer(self):
+        h = _handler("/api/dispatch/status")
+        h.do_GET()
+        self.assertEqual(_status(h), 400)
+        self._assert_headers(h)
+
+    def test_on_a_500_the_dispatcher_had_to_invent(self):
+        boom = fb.observer.cached_state
+        fb.observer.cached_state = lambda *a, **k: 1 / 0
+        self.addCleanup(lambda: setattr(fb.observer, "cached_state", boom))
+        h = _handler("/api/state")
+        h.do_GET()
+        self.assertEqual(_status(h), 500)
+        self._assert_headers(h)
+
+    def test_on_a_post_answer(self):
+        launched = []
+        real = fb.dispatch.start_dispatch
+        fb.dispatch.start_dispatch = lambda *a, **k: (launched.append(a)
+                                                      or {"ok": True})
+        self.addCleanup(lambda: setattr(fb.dispatch, "start_dispatch", real))
+        body = b'{"mission": "x"}'
+        h = _handler("/api/dispatch", body=body, command="POST",
+                     Content_Length=str(len(body)))
+        h.do_POST()
+        self.assertEqual(_status(h), 200)
+        self._assert_headers(h)
+
+    def test_no_content_security_policy_is_claimed(self):
+        """CSP is deferred whole, not half-shipped: every page is pervasively
+        inline. A header that says otherwise would be a promise the board
+        breaks on its own first click."""
+        h = _handler("/api/health")
+        h.do_GET()
+        self.assertNotIn("content-security-policy", _headers(h))
 
 
 if __name__ == "__main__":

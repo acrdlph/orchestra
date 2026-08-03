@@ -253,9 +253,31 @@ class Handler(BaseHTTPRequestHandler):
         flag that tells it: once a status line is committed, a second one over
         the top of it would be garbage, so the guard leaves the connection to
         close instead.
+
+        It is also the ONE choke point for the headers that belong on every
+        answer, which is why they are written here and not at the nine
+        `send_header` blocks below — nine places to forget is nine places that
+        will be forgotten. Both are free:
+
+        * `nosniff` — this server answers with agent-authored text (a
+          transcript, a mission brief, an error message quoting either). A
+          browser allowed to sniff a JSON body as HTML runs whatever an agent
+          happened to write, at the board's own full-privilege origin.
+        * `no-referrer` — a tailnet host and port are an address, and a
+          `Referer` hands it to whatever the user clicks through to next.
+
+        DELIBERATELY NOT CSP, tonight. docs/mobile/ARCHITECTURE.md:917 lists it
+        beside these two, and it is the one that cannot ship with them: all five
+        pages are pervasively inline — every handler an `onclick` attribute,
+        every style a `<style>` block, `escArg` written precisely because that
+        is how they are built — so any policy strict enough to be worth sending
+        breaks the whole board. That refactor is deferred whole, on purpose,
+        rather than shipped as a header nobody can enforce.
         """
         self._answered = True
         super().send_response(*args, **kwargs)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
 
     def _json(self, status, payload):
         """One JSON answer with a real status code, then hang up.
