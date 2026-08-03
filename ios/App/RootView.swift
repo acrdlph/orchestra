@@ -72,6 +72,12 @@ struct RootView: View {
 
     var body: some View {
         Group {
+            // **`isPaired` is tested FIRST, and that ordering is the whole
+            // guarantee.** The demo can only be entered from the unpaired
+            // pairing screen, and even if something later handed the app both
+            // states at once, a real board would still land in the gated branch.
+            // A demo branch above this one would be a way to reach a paired
+            // fleet without a face.
             if model.pairing.isPaired {
                 // The board — and with it every mutation (dispatch / send /
                 // finish / resume, all reachable only from inside these tabs) —
@@ -86,8 +92,17 @@ struct RootView: View {
                         // a cancel, and cannot race the foreground re-prompt below.
                         .task { await gate.authenticateIfNeeded() }
                 }
+            } else if model.isDemo {
+                // **No Face ID here, deliberately.** The gate guards a token that
+                // can type into terminals on somebody's Mac; the demo has no
+                // token, no server and nothing to protect, and App Review's
+                // device has no enrolled face. `APPSTORE.md` §8 row 1 requires
+                // the demo to sit in front of the biometric gate, and this is
+                // where that is true. The gate on the real board above is
+                // untouched.
+                paired
             } else {
-                PairingScreen(store: model.pairing)
+                PairingScreen(store: model.pairing) { model.enterDemo() }
             }
         }
         .background(Palette.canvas)
@@ -119,6 +134,11 @@ struct RootView: View {
             // do is claim a code it does not have.
             guard !model.pairing.isPaired,
                   let ticket = PairingTicket(url: url.absoluteString) else { return }
+            // **The demo never blocks the real flow.** Scanning the Mac's QR with
+            // the system camera while the demo board is open still pairs — the
+            // demo is dropped first so the app is never holding a canned board
+            // and a real token at the same time.
+            model.endDemo()
             Task { await model.pairing.pair(with: ticket, label: AppModel.deviceLabel) }
         }
     }
@@ -135,6 +155,23 @@ struct RootView: View {
     /// be worse than its absence — and the two things it could say today, armed
     /// auto-resumes and probe ages, are on the worktree and server screens where
     /// they are already in context.
+    /// The one way out of whichever board is on screen: leaving the demo, or
+    /// unpairing a real device. One closure, so no screen has to decide which
+    /// board it is looking at twice.
+    private func leave() {
+        if model.isDemo {
+            model.endDemo()
+        } else {
+            Task { await model.unpair() }
+        }
+    }
+
+    /// Handed to the connection bar only while the demo is up, so the strip that
+    /// rides every tab carries the way back to pairing.
+    private var exitDemo: (() -> Void)? {
+        model.isDemo ? { model.endDemo() } : nil
+    }
+
     private var paired: some View {
         TabView(selection: $tab) {
             Tab("Fleet", systemImage: "square.grid.2x2", value: 0) {
@@ -148,22 +185,20 @@ struct RootView: View {
                           initialRoute: initialFleetRoute,
                           openComposer: initialComposer,
                           initialSheet: initialWorktreeSheet,
-                          initialSend: initialSend) {
-                    Task { await model.unpair() }
-                }
-                .connectionBar(model.fleet)
+                          initialSend: initialSend,
+                          onLeave: leave)
+                .connectionBar(model.fleet, exitDemo: exitDemo)
             }
             Tab("Limits", systemImage: "gauge.with.dots.needle.33percent", value: 1) {
                 LimitsView(store: model.limits, initialAccount: initialAccount)
-                    .connectionBar(model.fleet)
+                    .connectionBar(model.fleet, exitDemo: exitDemo)
             }
             Tab("Server", systemImage: "bolt.horizontal", value: 2) {
                 ServerView(fleet: model.fleet, profile: model.pairing.profile,
                            push: model.push,
-                           initialShowSettings: initialShowSettings) {
-                    Task { await model.unpair() }
-                }
-                .connectionBar(model.fleet)
+                           initialShowSettings: initialShowSettings,
+                           onLeave: leave)
+                .connectionBar(model.fleet, exitDemo: exitDemo)
             }
         }
         .tint(Palette.statusFree)
@@ -171,11 +206,18 @@ struct RootView: View {
         // AFTER launch: this view appears the moment a token exists, and that is
         // the moment the stream should open.
         .task {
-            model.fleet.start()
-            model.ensurePushStarted()
             #if DEBUG
+            // The tab seam runs FIRST and in every mode. It was below the demo
+            // guard once, and `ORC_SCREEN=demo:limits` silently landed on the
+            // board — a screenshot found it, which is the whole method.
             if let route = DebugRoute.fromEnvironment() { tab = route.tab }
             #endif
+            // `FleetStore.start()` refuses in demo mode anyway; saying so here
+            // too keeps the push registration from being armed for a device that
+            // is not paired.
+            guard !model.isDemo else { return }
+            model.fleet.start()
+            model.ensurePushStarted()
         }
         // A notification tap deposits a deep link and bumps the router's
         // generation. Selecting the Fleet tab here — and resolving the exact
@@ -194,13 +236,15 @@ extension View {
     /// scroll view for one concrete reason: it must not scroll away. A board
     /// four minutes old that says so at the top of a list the user has already
     /// scrolled past is a board that says nothing.
-    func connectionBar(_ store: FleetStore) -> some View {
-        modifier(ConnectionBarModifier(store: store))
+    func connectionBar(_ store: FleetStore,
+                       exitDemo: (() -> Void)? = nil) -> some View {
+        modifier(ConnectionBarModifier(store: store, exitDemo: exitDemo))
     }
 }
 
 private struct ConnectionBarModifier: ViewModifier {
     @Bindable var store: FleetStore
+    let exitDemo: (() -> Void)?
     @State private var now = Date()
     /// Measured, not assumed — see `EnvironmentValues.bottomAccessoryHeight`.
     /// The bar grows a second line on a stale board, so a constant here would be
@@ -213,7 +257,8 @@ private struct ConnectionBarModifier: ViewModifier {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 ConnectionBar(link: store.link,
                               staleness: store.staleness(now: now),
-                              version: store.version) {
+                              version: store.version,
+                              exitDemo: exitDemo) {
                     Task { await store.refresh() }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {

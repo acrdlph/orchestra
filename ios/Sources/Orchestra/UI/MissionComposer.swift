@@ -129,11 +129,14 @@ public struct MissionComposer: View {
     }
 
     private var canLaunch: Bool {
-        !WireText.collapsed(mission).isEmpty && model != nil && effort != nil
-            && actions.dispatch == nil
+        !fleet.isDemo && !WireText.collapsed(mission).isEmpty
+            && model != nil && effort != nil && actions.dispatch == nil
     }
 
     private var disabledReason: String? {
+        // First, because it outranks every other reason and is the only one the
+        // user cannot fix from this screen.
+        if fleet.isDemo { return DemoCopy.refusal }
         if actions.dispatch != nil { return "a mission is already launching" }
         if WireText.collapsed(mission).isEmpty { return "the mission is empty" }
         if model == nil && effort == nil { return "pick a model and an effort" }

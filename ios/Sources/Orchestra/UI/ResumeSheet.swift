@@ -221,17 +221,23 @@ public struct ResumeSheet: View {
 
     @ViewBuilder
     private var buttons: some View {
+        // Both controls stay on screen in demo mode, disabled, with the reason
+        // above them — arming an auto-resume is one of the four things this app
+        // can make a fleet do and the reviewer should see that it is here.
+        if fleet.isDemo {
+            ServerSays(DemoCopy.refusal, tone: .refusal)
+        }
         if armed != nil {
             PrimaryAction(mayBeFiring ? "Change (blocked while firing)" : "Change the time",
                           symbol: "slider.horizontal.3",
                           tint: Palette.statusWorking,
-                          enabled: !working && !mayBeFiring) {
+                          enabled: !fleet.isDemo && !working && !mayBeFiring) {
                 // Re-arming while firing is a lost-update race server-side, so
                 // the control is blocked rather than merely discouraged.
                 Task { await arm() }
             }
             SecondaryAction("Disarm", symbol: "xmark", tint: Palette.statusNeeds,
-                            enabled: !working) {
+                            enabled: !fleet.isDemo && !working) {
                 Task {
                     working = true
                     await actions.cancelResume(worktree: worktree, sid: session.sid)
@@ -241,7 +247,7 @@ public struct ResumeSheet: View {
         } else {
             PrimaryAction("Arm auto-resume", symbol: "timer",
                           tint: Palette.statusWorking,
-                          enabled: !working && resolvedFireTime != nil) {
+                          enabled: !fleet.isDemo && !working && resolvedFireTime != nil) {
                 Task { await arm() }
             }
         }

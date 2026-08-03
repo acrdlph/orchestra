@@ -74,12 +74,32 @@ public struct LimitsView: View {
     private func list(_ report: LimitsReport) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Space.md) {
-                if let fetched = report.fetched {
-                    Text(verbatim: "fetched \(RelativeTime.short(since: fetched, now: now)) ago")
-                        .font(OrcFont.meta)
-                        .foregroundStyle(Palette.textTertiary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                // **Two fields on this API are called `generated_at` and they are
+                // different types** (`ios/README.md` finding 20): a float epoch
+                // on `/api/state`, an ISO-8601 string here — and **null in demo
+                // mode**. `fetched_at` is orchestra's own float clock and is the
+                // only one an age can be computed from, so it is the one the age
+                // uses; whether `cclimits` stamped the numbers at all is a
+                // separate fact and is said separately rather than implied.
+                VStack(alignment: .trailing, spacing: Space.xxs) {
+                    if let fetched = report.fetched {
+                        Text(verbatim: "fetched \(RelativeTime.short(since: fetched, now: now)) ago")
+                            .font(OrcFont.meta)
+                            .foregroundStyle(Palette.textTertiary)
+                    }
+                    if let stamp = report.generatedAt {
+                        Text(verbatim: "cclimits stamped it \(stamp)")
+                            .font(OrcFont.meta)
+                            .foregroundStyle(Palette.textDisabled)
+                    } else {
+                        Text("cclimits sent no generated_at — the age above is "
+                             + "orchestra's own fetch clock")
+                            .font(OrcFont.meta)
+                            .foregroundStyle(Palette.textDisabled)
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
                 ForEach(Array(report.ranked.enumerated()), id: \.element.id) { rank, account in
                     NavigationLink(value: account.slug) {
                         AccountCard(account: account, isBest: rank == 0, now: now)

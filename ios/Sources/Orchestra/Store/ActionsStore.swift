@@ -125,6 +125,35 @@ public final class ActionsStore {
     private weak var fleet: FleetStore?
     private var dispatchPoll: Task<Void, Never>?
 
+    // MARK: - The demo fleet
+
+    /// True while a canned board is on screen.
+    ///
+    /// **Every mutation below asks this before it does anything**, and the
+    /// answer is one sentence in the server's own voice rather than a silent
+    /// no-op. The views also disable their buttons and print the same line —
+    /// that is the courtesy; this is the guarantee. Nothing here can reach the
+    /// network in demo mode even if a control is somehow tapped, and no refusal
+    /// path ever produces an `ok: true`.
+    public private(set) var isDemo = false
+
+    public func enterDemo() {
+        dispatchPoll?.cancel()
+        dispatchPoll = nil
+        isDemo = true
+        dispatch = nil
+        finishes = [:]
+        resumeNotices = [:]
+        briefsSentLocally = [:]
+    }
+
+    public func exitDemo() {
+        isDemo = false
+        dispatch = nil
+        finishes = [:]
+        resumeNotices = [:]
+    }
+
     public init(client: OrchestraClient, fleet: FleetStore? = nil) {
         self.client = client
         self.fleet = fleet
@@ -146,6 +175,15 @@ public final class ActionsStore {
     public func launch(mission: String, worktree: String?, account: String?,
                        model: String, effort: String, forceModel: Bool) {
         let now = Date()
+        if isDemo {
+            // `.refused` and nothing else: it is the one dispatch phase that
+            // means *nothing was launched*, which is exactly true here.
+            dispatch = DispatchRun(key: UUID().uuidString, job: nil,
+                                   phase: .refused(DispatchRefusal(message: DemoCopy.refusal)),
+                                   startedAt: now, mission: mission, worktree: worktree,
+                                   account: account, model: model, effort: effort)
+            return
+        }
         guard inFlight.begin(.dispatch, at: now) else { return }
         let key = UUID().uuidString
         dispatch = DispatchRun(key: key, job: nil, phase: .launching, startedAt: now,
@@ -255,6 +293,13 @@ public final class ActionsStore {
     /// card's own `closeout_sent`.
     public func finish(worktree: String, step: FinishStep) {
         let now = Date()
+        if isDemo {
+            finishes[worktree] = FinishRun(
+                worktree: worktree,
+                phase: .settled(FinishReply(ok: false, message: DemoCopy.refusal)),
+                startedAt: now, step: step)
+            return
+        }
         guard inFlight.begin(.finish(worktree: worktree), at: now) else { return }
         finishes[worktree] = FinishRun(worktree: worktree, phase: .running,
                                        startedAt: now, step: step)
@@ -321,6 +366,16 @@ public final class ActionsStore {
         "\(worktree)|\(sid)"
     }
 
+    /// The three resume paths share one notice slot, so they share one refusal.
+    /// Returns true when the caller must stop.
+    @discardableResult
+    private func refuseInDemo(worktree: String, sid: String) -> Bool {
+        guard isDemo else { return false }
+        resumeNotices[Self.resumeKey(worktree: worktree, sid: sid)] =
+            ResumeReply(ok: false, message: DemoCopy.refusal)
+        return true
+    }
+
     public func notice(worktree: String, sid: String) -> ResumeReply? {
         resumeNotices[Self.resumeKey(worktree: worktree, sid: sid)]
     }
@@ -333,6 +388,7 @@ public final class ActionsStore {
     /// `"{worktree}|{sid}"`), which is why this one is allowed to be retried.
     public func armResume(worktree: String, sid: String, account: String,
                           delayS: Double?, resetsAt: Double?, dueAt: Double?) async {
+        guard !refuseInDemo(worktree: worktree, sid: sid) else { return }
         let key = InFlight.Key.resume(worktree: worktree, sid: sid)
         guard inFlight.begin(key, at: Date()) else { return }
         defer { inFlight.end(key) }
@@ -361,6 +417,7 @@ public final class ActionsStore {
     /// confirmation — `UX.md` §7.5 lists it among the things that must NOT have
     /// friction — and the reply lands in the same notice slot as an arm.
     public func resumeNow(worktree: String, session: Session) async {
+        guard !refuseInDemo(worktree: worktree, sid: session.sid) else { return }
         let key = InFlight.Key.send(sid: session.sid)
         guard inFlight.begin(key, at: Date()) else { return }
         defer { inFlight.end(key) }
@@ -387,6 +444,7 @@ public final class ActionsStore {
     }
 
     public func cancelResume(worktree: String, sid: String) async {
+        guard !refuseInDemo(worktree: worktree, sid: sid) else { return }
         let key = InFlight.Key.resume(worktree: worktree, sid: sid)
         guard inFlight.begin(key, at: Date()) else { return }
         defer { inFlight.end(key) }

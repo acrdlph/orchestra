@@ -20,13 +20,41 @@ public final class LimitsStore {
     public private(set) var error: OrchestraError?
     public private(set) var loadedAt: Date?
 
+    /// The canned report, while the demo fleet is on screen. When it is set this
+    /// store never touches the network — including on the pull-to-refresh the
+    /// screen still offers, which would otherwise answer `.unauthorized` and
+    /// replace the demo with a failure state.
+    private var demo: LimitsReport?
+
     private let client: OrchestraClient
 
     public init(client: OrchestraClient) {
         self.client = client
     }
 
+    public func loadDemo(_ canned: LimitsReport) {
+        demo = canned
+        report = canned
+        error = nil
+        loading = false
+        loadedAt = Date()
+    }
+
+    public func exitDemo() {
+        demo = nil
+        report = nil
+        error = nil
+        loadedAt = nil
+    }
+
     public func load() async {
+        if let demo {
+            report = demo
+            error = nil
+            loading = false
+            loadedAt = Date()
+            return
+        }
         loading = report == nil
         do {
             report = try await client.limits()

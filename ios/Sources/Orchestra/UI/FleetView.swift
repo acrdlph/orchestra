@@ -17,7 +17,9 @@ public struct FleetView: View {
     @Bindable private var router: PushRouter
     private let client: OrchestraClient
     private let serverLabel: String
-    private let onUnpair: () -> Void
+    /// Unpair a real device, or leave the demo. One closure, because the board
+    /// does not otherwise care which of the two it is showing.
+    private let onLeave: () -> Void
     /// Open the mission composer on appear. Same seam as `initialRoute`, and it
     /// exists for the same reason: a simulator cannot be tapped from a script.
     private let openComposer: Bool
@@ -60,7 +62,7 @@ public struct FleetView: View {
                 client: OrchestraClient, serverLabel: String,
                 initialRoute: FleetRoute? = nil, openComposer: Bool = false,
                 initialSheet: WorktreeSheet? = nil, initialSend: String? = nil,
-                onUnpair: @escaping () -> Void) {
+                onLeave: @escaping () -> Void) {
         self.store = store
         self.actions = actions
         self.limits = limits
@@ -72,7 +74,7 @@ public struct FleetView: View {
         self.openComposer = openComposer
         self.initialSheet = initialSheet
         self.initialSend = initialSend
-        self.onUnpair = onUnpair
+        self.onLeave = onLeave
     }
 
     private var staleness: Staleness { store.staleness(now: now) }
@@ -103,9 +105,15 @@ public struct FleetView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("Refresh") { Task { await store.refresh() } }
-                        Button("Unpair this device", role: .destructive, action: onUnpair)
-                        SwiftUI.Section("Server") { Text(serverLabel) }
+                        if store.isDemo {
+                            Button(DemoCopy.exit, systemImage: "arrow.uturn.backward",
+                                   action: onLeave)
+                            SwiftUI.Section("Server") { Text(DemoCopy.notConnected) }
+                        } else {
+                            Button("Refresh") { Task { await store.refresh() } }
+                            Button("Unpair this device", role: .destructive, action: onLeave)
+                            SwiftUI.Section("Server") { Text(serverLabel) }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -118,7 +126,8 @@ public struct FleetView: View {
                                        client: client, initialSheet: initialSheet)
                 case .chat(let worktree, let account, let sid):
                     ChatView(worktree: worktree, account: account, sid: sid,
-                             store: store, client: client, autoSend: initialSend)
+                             store: store, client: client,
+                             autoSend: store.isDemo ? nil : initialSend)
                 case .map:
                     BranchMapView(store: topology, board: boardJoin,
                                   boardWorktrees: store.state?.worktrees.map(\.name) ?? []) { name in
@@ -232,6 +241,7 @@ public struct FleetView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Space.md, pinnedViews: [.sectionHeaders]) {
                 headline
+                if store.isDemo { demoBanner }
                 if staleness.isStale, let error = store.lastError {
                     // The board stayed on screen; say WHY it is not moving.
                     StaleBanner(error: error, since: store.lastFrameAt ?? store.lastGoodAt, now: now)
@@ -321,6 +331,36 @@ public struct FleetView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, Space.sm)
+    }
+
+    /// Said once, at the top of the board, and then never again on any screen
+    /// below — the connection strip carries it from there. A notice repeated on
+    /// every card is a notice nobody reads.
+    private var demoBanner: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack(spacing: Space.sm) {
+                Image(systemName: "theatermasks")
+                    .foregroundStyle(Palette.statusFree)
+                    .accessibilityHidden(true)
+                Text(DemoCopy.link)
+                    .font(OrcFont.status)
+                    .foregroundStyle(Palette.statusFree)
+                Spacer(minLength: 0)
+                Button(DemoCopy.exit, action: onLeave)
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.statusFree)
+                    .frame(minHeight: 30)
+            }
+            Text(DemoCopy.banner)
+                .font(OrcFont.meta)
+                .foregroundStyle(Palette.textTertiary)
+        }
+        .padding(Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.statusFree.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .stroke(Palette.statusFree.opacity(0.4), lineWidth: 1))
     }
 
     private func header(_ group: Triage.Group) -> some View {

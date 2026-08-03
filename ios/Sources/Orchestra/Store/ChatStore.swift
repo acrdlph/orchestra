@@ -100,6 +100,14 @@ public final class ChatStore {
 
     private let client: OrchestraClient
     private var poll: Task<Void, Never>?
+    /// The canned conversation, when this screen belongs to the demo fleet.
+    ///
+    /// It rides the same `load()` → `messages` → `ChatView` path a real
+    /// transcript takes, so what a reviewer sees is the real screen with real
+    /// bubbles, the server-truncation footnote, the timestamps and the
+    /// auto-follow — not a second rendering built for the demo. What it does not
+    /// do is poll: there is nothing to poll.
+    private let demo: ChatTranscript?
 
     /// 15 s at rest. 5 s when something is in flight or was sent in the last two
     /// minutes — `UX.md` §3.3.3, and the reason is the receipt: a queued message
@@ -108,14 +116,28 @@ public final class ChatStore {
     private static let activePeriod: TimeInterval = 5
     private static let activeWindow: TimeInterval = 120
 
-    public init(client: OrchestraClient, worktree: String, account: String, sid: String) {
+    public init(client: OrchestraClient, worktree: String, account: String, sid: String,
+                demo: ChatTranscript? = nil) {
         self.client = client
         self.worktree = worktree
         self.account = account
         self.sid = sid
+        self.demo = demo
     }
 
+    /// Whether this conversation is invented. The composer stays on screen and
+    /// says so, rather than being replaced — the reviewer is here to see that
+    /// the app can reply, not to be shown a smaller app.
+    public var isDemo: Bool { demo != nil }
+
     public func start() {
+        if demo != nil {
+            // One load, no timer. A canned transcript cannot change, and a poll
+            // against an unpaired client is a `.unauthorized` that would replace
+            // the conversation with a failure screen.
+            Task { [weak self] in await self?.load() }
+            return
+        }
         guard poll == nil else { return }
         poll = Task { [weak self] in
             while !Task.isCancelled {
@@ -139,6 +161,14 @@ public final class ChatStore {
     }
 
     public func load() async {
+        if let demo {
+            messages = demo.numbered
+            serverError = demo.ok ? nil : demo.error
+            transportError = nil
+            loadedAt = Date()
+            loading = false
+            return
+        }
         loading = messages.isEmpty
         do {
             let transcript = try await client.chat(account: account, sid: sid)
@@ -201,6 +231,18 @@ public final class ChatStore {
     public func send(_ raw: String) async -> Outgoing.State? {
         let text = WireText.collapsed(raw)
         guard !text.isEmpty, !sending else { return nil }
+
+        // The demo fleet refuses, in the server's own voice, and refuses HERE
+        // rather than only in the view — a disabled button is a courtesy, this
+        // is the guarantee. Nothing leaves the device and nothing is faked: the
+        // bubble carries the refusal exactly as a real one would.
+        if isDemo {
+            var refused = Outgoing(text: text, transcriptBaseline: messages.count)
+            refused.state = .refused(DemoCopy.refusal)
+            outbox.append(refused)
+            return refused.state
+        }
+
         sending = true
         defer { sending = false }
 
