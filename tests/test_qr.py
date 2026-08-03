@@ -377,13 +377,21 @@ class TestGoldens(unittest.TestCase):
         "11111110110001001000110110010",
     ]
 
+    # The tailnet hostname the last case carries — fictional, and the same
+    # constant `tests/qr_ref.py` feeds the reference decoder, so the payload
+    # this digest pins is a payload the oracle still checks. It replaced this
+    # author's own machine name character for character (37), which is why the
+    # case is still version 6; the digest below was re-recorded in that commit
+    # and `python3 tests/qr_ref.py` was green on the new string.
+    REF_TAILNET_HOST = "someones-laptop-pro.tail0a1b2c.ts.net"
+
     # (payload, level, expected version, sha256 of the flattened matrix)
     DIGESTS = [
         ("x" * 100, "M", 6, "3b1cbac996b5a950f7fb084505c80f58"),
         ("x" * 150, "L", 7, "da7bffc962b319b84fb9338727e43c49"),
         ("x" * 213, "M", 10, "f673820bb5ccd3f0f6035d879c98fa30"),
-        ("orc://p?h=achills-macbook-pro.tail1205d9.ts.net&p=4242&c=7K3M9QP2",
-         "Q", 6, "463cbf492d907344047ba0dcc699ddd5"),
+        (f"orc://p?h={REF_TAILNET_HOST}&p=4242&c=7K3M9QP2",
+         "Q", 6, "9fe1dca6a4aa690e7dc1b63d36e243dc"),
     ]
 
     def test_a_single_letter_at_level_m(self):
