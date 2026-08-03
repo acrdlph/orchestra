@@ -89,16 +89,29 @@ public enum Actuation {
         case send, dispatch, finish, resume
     }
 
+    /// The server's cross-host phrase for "typed, but the Return never landed".
+    /// `terminal.send_to_process` puts this exact substring in the Terminal,
+    /// iTerm2 AND tmux refusals for that case, by design — it is the one wire
+    /// contract for "a retry would duplicate the message". Keep in lockstep
+    /// with `orchestra/terminal.py` (tests/test_fixes_submit.py pins it there).
+    static let composerUnsent = "sitting in the composer, unsent"
+
     /// Classify a `/api/send` reply into an outcome.
     ///
-    /// The tmux clause is the whole reason this is a function and not `reply.ok`.
-    /// `terminal.send_to_process` returns the literal string
-    /// `"tmux send-keys failed"` for `rc1 != 0 || rc2 != 0`, and those are two
-    /// separate `tmux send-keys` calls: the text, then Enter. Half of that
-    /// failing is a message sitting in the agent's composer that a "retry" would
-    /// duplicate.
+    /// The unsent clauses are the whole reason this is a function and not
+    /// `reply.ok`. Sending is two acts on every host — the text, then the
+    /// Return — and the second failing leaves the message in the agent's
+    /// composer, where a "retry" would type it a second time. The server says
+    /// so with `composerUnsent` on all three hosts; the legacy
+    /// `"tmux send-keys failed"` match stays for a server older than the
+    /// submit-proof fix.
     public static func outcome(ofSend reply: SendReply) -> Outcome {
         if reply.ok { return .succeeded }
+        if let message = reply.message, message.contains(composerUnsent) {
+            return .ambiguous("the text was typed but the Return never landed — "
+                              + "it may be sitting in the agent's composer. "
+                              + "Attach and look before sending it again.")
+        }
         if let message = reply.message, message.contains("tmux send-keys failed") {
             return .ambiguous("tmux reported a failure, and it is two calls — the "
                               + "text, then Enter. The message may be sitting in "
@@ -111,9 +124,15 @@ public enum Actuation {
     /// Classify a `/api/finish` reply.
     ///
     /// `mode: nudge` with `ok: false` is the one ambiguous finish: the nudge text
-    /// went through `send_to_process`, so it carries the same tmux caveat.
+    /// went through `send_to_process`, so it carries the same composer caveat on
+    /// every host.
     public static func outcome(ofFinish reply: FinishReply) -> Outcome {
         if reply.ok { return .succeeded }
+        if let message = reply.message, message.contains(composerUnsent) {
+            return .ambiguous("the brief was typed but the Return never landed — "
+                              + "it may be sitting in the agent's composer. "
+                              + "Attach and look before finishing again.")
+        }
         if let message = reply.message, message.contains("tmux send-keys failed") {
             return .ambiguous("tmux reported a failure part-way through typing the "
                               + "brief. Some of it may be in the agent's composer. "

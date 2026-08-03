@@ -219,6 +219,14 @@ change what the app is allowed to do at all.
 
 ### The send that types but does not submit — the sharpest defect phase 3 found
 
+> **Fixed on the server, 2026-08-04.** `terminal.send_to_process` now presses a
+> separate bare Return after the text on all three hosts (the tmux path already
+> half-did) and reports `typed and submitted (…)`; the failure case answers
+> `ok: false` with the cross-host phrase `sitting in the composer, unsent`,
+> which `Actuation.outcome` classifies as ambiguous — no retry offered. The
+> account below is the *discovery*, kept as written; wire findings 28 and 29
+> describe the pre-fix server.
+
 `POST /api/send` to a Terminal.app-hosted agent answered:
 
 ```json
