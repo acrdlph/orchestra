@@ -17,7 +17,8 @@ proves the composer let go of it.
 Every launch appends a line to `DISPATCH_LOG` — the audit trail, with the
 author's original words next to the brief the agent actually got. Jobs run on
 background threads; `_jobs` holds their progress so the browser can poll
-`dispatch_status` without holding an HTTP request open.
+`dispatch_status` without holding an HTTP request open, and `DISPATCH_JOBS`
+holds the settled ones on disk so a poller outlives a restart.
 
 `closeout_shell` lives here rather than in `finish`, where its prose belongs:
 it is the tmux command a DISPATCH runs, `_run_dispatch` is its only caller,
@@ -25,18 +26,21 @@ and keeping it here is what breaks the finish↔dispatch import cycle (ADR 0010,
 'cycles'). It takes the brief as a parameter and touches no CLOSEOUT_* text,
 so it carries nothing with it.
 
-DISPATCH_LOG is rebound at runtime (tests point it at a temp file), so it is
-deliberately NOT re-exported by the facade — reach it as `dispatch.DISPATCH_LOG`.
+DISPATCH_LOG and DISPATCH_JOBS are rebound at runtime (tests point them at a
+temp file), so they are deliberately NOT re-exported by the facade — reach them
+as `dispatch.DISPATCH_LOG`.
 """
 
 import json
 import os
 import re
 import shlex
+import sys
 import threading
 import time
 
-from . import config, shell, gitrepo, hooks, transcripts, limits, observer, disk
+from . import (config, shell, gitrepo, hooks, transcripts, limits, observer,
+               disk, idem)
 
 
 # --------------------------------------------------------------- dispatch
@@ -217,9 +221,97 @@ def _headroom_detail(best, model, pinned):
     return used if pinned else f"best is [{best['label']}] — {used}"
 
 
-_jobs = {}                 # job_id -> {progress, done, result}
-_jobs_lock = threading.Lock()
+_jobs = {}                 # job_id -> {id, progress, done, result}
+_jobs_lock = threading.Lock()   # guards _jobs, _store AND the file
 _job_seq = [0]
+
+# ---- job records that outlive a restart --------------------------------
+# `_jobs` is in-memory and holds the last 20, which was enough while the only
+# poller was a browser tab with the drawer open. The phone is not that: it
+# polls `/api/dispatch/status` for 90 s from a background task, and `./start.sh`
+# kills and relaunches this process by design, so a restart inside that window
+# answered "unknown job" — forever, for a mission that had in fact launched.
+#
+# Settled jobs are persisted here instead, beside resume.schedule.json and
+# idem.store.json and written the same way (tmp + os.replace, 0600 at create),
+# so the answer after a restart is the RESULT the poller was waiting for.
+#
+# A job that had NOT settled when the process died is genuinely unknowable —
+# the worker thread went with the process, and no file can say whether tmux
+# got the session up. So the record is written write-ahead (the `idem` idiom)
+# and tagged with the boot it ran under: a lookup that finds one under a
+# DIFFERENT boot says the server restarted mid-run, which is a true sentence,
+# instead of "unknown job", which is a false one.
+DISPATCH_JOBS = config.HERE / "dispatch.jobs.json"
+JOBS_KEEP = 20             # the same bound `_jobs` keeps in memory
+
+_store = {}                # job_id -> {boot, done, result, progress, ts}
+_store_loaded = False      # the disk read happens once, lazily, under the lock
+
+
+def _load_jobs():
+    """Read the persisted job records once. Caller holds `_jobs_lock`.
+
+    Missing or corrupt -> start empty and never raise: these records are
+    advisory, and a broken job table must not take the dispatch door down."""
+    global _store_loaded
+    if _store_loaded:
+        return
+    _store_loaded = True   # set first: a missing/corrupt file must not retry
+    try:
+        raw = DISPATCH_JOBS.read_text()
+    except OSError:
+        return
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return             # corrupt -> empty; the worst case is "unknown job"
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if isinstance(jobs, dict):
+        for jid, rec in jobs.items():
+            if isinstance(rec, dict):
+                _store[jid] = rec
+
+
+def _save_jobs():
+    """Persist the job records — atomically, caller holding `_jobs_lock`.
+
+    Trimmed to the last `JOBS_KEEP` on the way out, so the file is bounded by
+    construction rather than by a sweeper. 0600 at create like every sibling
+    state file: a stored result carries the verbatim kickoff brief, which is
+    the most sensitive thing this process holds (ARCHITECTURE §2.1)."""
+    for old in list(_store)[:-JOBS_KEEP]:
+        del _store[old]
+    tmp = DISPATCH_JOBS.with_name(DISPATCH_JOBS.name + ".tmp")
+    try:
+        blob = json.dumps({"jobs": _store}, indent=1)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(blob + "\n")
+        os.replace(tmp, DISPATCH_JOBS)
+    except OSError as e:
+        # loud, not swallowed: a job table that silently stops persisting is a
+        # phone told "unknown job" about a mission that is live
+        print(f"orchestra: couldn't save {DISPATCH_JOBS.name}: {e}",
+              file=sys.stderr)
+
+
+def _record_job(job_id, done, result, progress):
+    """Write one job record through. Caller holds `_jobs_lock`."""
+    _load_jobs()
+    _store[job_id] = {"boot": idem.BOOT_ID, "done": done, "result": result,
+                      "progress": list(progress), "ts": time.time()}
+    _save_jobs()
+
+
+def _reset_jobs():
+    """Tests only: forget every record and force the next access to reload from
+    DISPATCH_JOBS (the process-wide store outlives a single test)."""
+    global _store_loaded
+    with _jobs_lock:
+        _jobs.clear()
+        _store.clear()
+        _store_loaded = False
 
 
 def _log(job, line):
@@ -281,11 +373,17 @@ def start_dispatch(mission, worktree=None, account=None,
                 "wait for it to settle, then retry"}
     _job_seq[0] += 1
     job_id = "job-" + time.strftime("%H%M%S") + f"-{_job_seq[0]}"
-    job = {"progress": [], "done": False, "result": None}
+    # the id rides ON the job, so `_run_dispatch` can settle the persisted
+    # record without a second parameter its other caller (a test, a future
+    # runner) would have to know about
+    job = {"id": job_id, "progress": [], "done": False, "result": None}
     with _jobs_lock:
         _jobs[job_id] = job
         for old in list(_jobs)[:-20]:   # keep only the last 20 jobs
             del _jobs[old]
+        # write-ahead, BEFORE the worker starts: a restart mid-run then finds a
+        # record it can name honestly instead of denying the job ever existed
+        _record_job(job_id, done=False, result=None, progress=[])
     threading.Thread(target=_run_dispatch, daemon=True, args=(
         job, mission, worktree, account, model, effort,
         closeout_trunk)).start()
@@ -408,6 +506,11 @@ def _run_dispatch(job, mission, worktree, account, model, effort,
         with _jobs_lock:
             job["result"] = result
             job["done"] = True
+            # settle the persisted record too — this is the answer a phone
+            # still polling after `./start.sh` restarted the server gets back
+            if job.get("id"):
+                _record_job(job["id"], done=True, result=result,
+                            progress=job["progress"])
 
     try:
         if config.DEMO:
@@ -437,8 +540,7 @@ def _run_dispatch(job, mission, worktree, account, model, effort,
             # One-shot closeout: no branch header (the branch IS the mission), no
             # effort dance (a headless run takes no slash commands). The wrapper
             # verifies the landing itself — see closeout_shell.
-            name = ("closeout-" + re.sub(r"[^a-zA-Z0-9]+", "-", worktree)
-                    .strip("-").lower() + time.strftime("-%H%M%S"))
+            name = session_name("closeout", worktree)
             _log(job, f"② launching one-shot closeout {name}…")
             rc, out = shell.run(["tmux", "-L", FLEET_SOCK, "new-session", "-d", "-s", name,
                                  "-c", wt["path"],
@@ -464,8 +566,7 @@ def _run_dispatch(job, mission, worktree, account, model, effort,
         kickoff = (header + "Commit as you go. Your mission, in the author's own "
                    "words: " + mission)
 
-        name = "mission-" + re.sub(r"[^a-zA-Z0-9]+", "-", worktree).strip("-").lower() \
-               + time.strftime("-%H%M%S")
+        name = session_name("mission", worktree)
         model_flag = f" --model {shlex.quote(model)}" if model else ""
         shell_cmd = (f"CLAUDE_CONFIG_DIR={shlex.quote(str(home))} "
                      f"exec claude --dangerously-skip-permissions"
@@ -524,9 +625,84 @@ def _run_dispatch(job, mission, worktree, account, model, effort,
 
 
 def dispatch_status(job_id):
+    """What a poller gets back for `job_id`: memory first, then the disk store.
+
+    The three answers off disk are three different truths and are worth
+    keeping apart. A SETTLED record replays its result, so a restart inside
+    the phone's 90 s poll window ends the poll properly instead of stranding
+    it. A record left in flight under a DIFFERENT boot means the server
+    restarted while the worker ran — nobody can say whether the tmux session
+    came up, so it says exactly that and points at the board. Only a job id
+    this machine has no record of at all is an unknown job."""
     with _jobs_lock:
         job = _jobs.get(job_id)
-        if not job:
+        if job:
+            return {"ok": True, "progress": list(job["progress"]),
+                    "done": job["done"], "result": job["result"]}
+        _load_jobs()
+        rec = _store.get(job_id)
+        if rec is None:
             return {"ok": False, "error": "unknown job"}
-        return {"ok": True, "progress": list(job["progress"]),
-                "done": job["done"], "result": job["result"]}
+        if rec.get("done"):
+            return {"ok": True, "progress": list(rec.get("progress") or []),
+                    "done": True, "result": rec.get("result")}
+        if rec.get("boot") == idem.BOOT_ID:
+            # started in THIS process, never settled, and the LRU dropped it
+            # while it ran — twenty dispatches deep. Still not "unknown".
+            return {"ok": False, "error":
+                    "this job is still running, but the board no longer holds "
+                    "its progress — check the board"}
+        return {"ok": False, "error":
+                "the server restarted while this job ran — check the board; "
+                "the mission may well be live"}
+
+
+# ---- session names, and reaping the dead ones --------------------------
+
+def session_slug(worktree):
+    """The worktree part of a fleet tmux session name. One definition, because
+    `reap_dead_sessions` has to recognise exactly what the launch paths mint."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", worktree).strip("-").lower()
+
+
+def session_name(kind, worktree, now=None):
+    """`mission-orbital-web-142207` / `closeout-orbital-web-142207`."""
+    stamp = time.strftime("-%H%M%S", time.localtime(now)) if now is not None \
+        else time.strftime("-%H%M%S")
+    return f"{kind}-{session_slug(worktree)}{stamp}"
+
+
+_SESSION_RE = re.compile(r"^(?:mission|closeout)-(.+)-\d{6}$")
+
+
+def reap_dead_sessions(worktree):
+    """Kill this worktree's fleet tmux sessions that have no live process in
+    them. Returns the names killed (usually none — tmux reaps a session whose
+    last pane exits, so only a pane held open by `remain-on-exit` lingers).
+
+    Deliberately the narrowest safe rule there is, because the failure mode is
+    killing somebody's working agent. A session qualifies only if its name is
+    one THIS module mints (`_SESSION_RE`, with the slug of this worktree) and
+    every pane in it reports `pane_dead=1` — tmux's own word for "the process
+    in here has exited". No pane list, an unreadable one, or a single live
+    pane and the session is left exactly alone. The name match narrows what we
+    look at; the pane check is what makes the kill provable, so a slug
+    collision between two worktrees still cannot kill anything live."""
+    rc, out = shell.run(["tmux", "-L", FLEET_SOCK, "list-sessions",
+                         "-F", "#{session_name}"])
+    if rc != 0:
+        return []
+    slug, killed = session_slug(worktree), []
+    for name in out.splitlines():
+        m = _SESSION_RE.match(name.strip())
+        if not m or m.group(1) != slug:
+            continue
+        rc2, panes = shell.run(["tmux", "-L", FLEET_SOCK, "list-panes", "-s",
+                                "-t", name.strip(), "-F", "#{pane_dead}"])
+        flags = [p.strip() for p in panes.splitlines() if p.strip()]
+        if rc2 != 0 or not flags or any(f != "1" for f in flags):
+            continue           # something is alive in there, or tmux won't say
+        if shell.run(["tmux", "-L", FLEET_SOCK, "kill-session",
+                      "-t", name.strip()])[0] == 0:
+            killed.append(name.strip())
+    return killed
