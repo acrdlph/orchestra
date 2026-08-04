@@ -129,6 +129,14 @@ def dns_name():
     is reported even on tailnets with MagicDNS switched off, and advertising
     a name the phone cannot resolve is strictly worse than the IP. The
     trailing dot is the DNS root, correct on the wire and noise in a URL.
+
+    And None unless the name is SHAPED like a MagicDNS name — this value is
+    advertised into the QR the phone scans (`pairing.advertised`), so it is
+    validated against `<label>.<…>.ts.net` before it leaves here (security
+    review L2). It matches the exact `ts.net` ATS exception the store build
+    carries; anything else would be a name the store app could not load even
+    if `tailscale` reported it, and a defence-in-depth boundary against a
+    `tailscale` output steered to some other host.
     """
     for binary in TAILSCALE:
         out = _run([binary, "status", "--json"])
@@ -140,8 +148,17 @@ def dns_name():
             if not (st.get("CurrentTailnet") or {}).get("MagicDNSEnabled"):
                 return None
             name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
-            return name or None
+            return name if _is_ts_name(name) else None
     return None
+
+
+# `<label>.<tailnet>.ts.net`, lowercased: a leading alnum, then the LDH set,
+# ending in the literal `.ts.net` the store build's ATS exception names.
+_TS_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ts\.net$")
+
+
+def _is_ts_name(name):
+    return bool(_TS_NAME.fullmatch((name or "").lower()))
 
 
 def bindable(addr, port=0):

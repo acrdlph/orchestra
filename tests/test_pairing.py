@@ -1248,6 +1248,16 @@ class TestTheAdvertisedHost(PairCase):
 
             fb.tailnet._run = lambda cmd: ""
             self.assertIsNone(real())
+
+            # L2: a name that is not shaped like `<…>.ts.net` is not advertised,
+            # even if the daemon reports it — it is going into a QR the phone
+            # scans, and the store build's ATS only covers ts.net.
+            for bad in ("evil.com", "mac.example.org", "attacker.ts.net.evil.com",
+                        "ts.net.evil.com", "http://mac.ts.net"):
+                fb.tailnet._run = (lambda b: lambda cmd:
+                    '{"CurrentTailnet": {"MagicDNSEnabled": true},'
+                    ' "Self": {"DNSName": "%s"}}' % b)(bad)
+                self.assertIsNone(real(), f"{bad!r} must not be advertised")
         finally:
             fb.tailnet._run = saved
 
