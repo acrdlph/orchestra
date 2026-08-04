@@ -29,8 +29,8 @@ import time                    # unused here, but tests reach time.sleep as
 
 from . import (config, shell, status, gitrepo, procs, hooks, transcripts,
                limits, watcher, observer, identity, auth, terminal, chat,
-               finish, dispatch, resume, qr, tailnet, pairing, push, notify,
-               server)
+               sessionlog, finish, dispatch, resume, qr, tailnet, pairing,
+               push, notify, server)
 
 # ---- public surface (facade). Re-exported so tests, tools and
 # tests/characterize.py can keep saying `orchestra.<name>`. DEMO,
@@ -91,6 +91,12 @@ from .pairing import (open_window, claim, normalise, peer_permitted,
                       ATTEMPTS_PER_PEER, ATTEMPTS_TOTAL)
 from .terminal import focus_process, send_to_process, _osa_escape
 from .chat import read_chat
+# The full-transcript reader beside the drawer's. `read_chat` is unchanged and
+# still 900-capped with newlines collapsed; these two are the paged, uncapped
+# view the phone reads (API.md §9.11).
+from .sessionlog import (read_messages, read_entry, MAX_ENTRY_CHARS,
+                         MAX_ONE_CHARS, WINDOW_BYTES, MAX_READ,
+                         DEFAULT_LIMIT, MAX_LIMIT)
 from .finish import (start_finish, _park_on_trunk, _reachable, _closeouts,
                      _prune_closeouts, CLOSEOUT_TTL_S,
                      CLOSEOUT_TEXT, SLIM_CLOSEOUT_TEXT, CLOSEOUT_NUDGE_TEXT)
