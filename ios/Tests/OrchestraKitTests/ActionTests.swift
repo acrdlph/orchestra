@@ -67,6 +67,32 @@ struct ActionTests {
         #expect(Actuation.mayOfferRetry(.ambiguous(why)) == false)
     }
 
+    /// The submit-proof server's refusal for "typed, Return never landed" —
+    /// the exact body `terminal.send_to_process` now returns on the Terminal
+    /// and iTerm2 paths. It must classify ambiguous on BOTH send and finish:
+    /// the message is in the composer, and a retry would type it twice.
+    @Test func aComposerUnsentRefusalIsAmbiguousOnEveryHost() throws {
+        let reply = try decode(SendReply.self, """
+        {"ok": false, "message": "typed into Terminal (ttys008) but the Return \
+        never landed \\u2014 the message is sitting in the composer, unsent"}
+        """)
+        guard case .ambiguous(let why) = Actuation.outcome(ofSend: reply) else {
+            Issue.record("composer-unsent must not classify as a clean refusal")
+            return
+        }
+        #expect(why.contains("composer"))
+        #expect(Actuation.mayOfferRetry(.ambiguous(why)) == false)
+
+        let finish = try decode(FinishReply.self, """
+        {"ok": false, "message": "typed into iTerm2 (ttys012) but the Return \
+        never landed \\u2014 the message is sitting in the composer, unsent"}
+        """)
+        guard case .ambiguous = Actuation.outcome(ofFinish: finish) else {
+            Issue.record("a composer-unsent finish must not offer a re-finish")
+            return
+        }
+    }
+
     /// The retry rule, stated once: only a clean refusal may be offered again.
     @Test func onlyACleanRefusalMayBeRetried() {
         #expect(Actuation.mayOfferRetry(.refused))

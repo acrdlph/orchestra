@@ -30,12 +30,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INDEX = ROOT / "index.html"
 MAP = ROOT / "map.html"
+LIMITS = ROOT / "limits.html"
+PAIR = ROOT / "pair.html"
+GUIDE = ROOT / "guide.html"
 NODE = shutil.which("node")
 
 
 def _extract_const(src, name):
-    """Pull a `const <name> = ...;` one-liner out of the page, verbatim."""
-    m = re.search(r"^const %s = .*;$" % re.escape(name), src, re.MULTILINE)
+    """Pull a `const <name> = ... ;` declaration out of the page, verbatim —
+    one line or several (pair.html wraps `esc` across two), up to the first
+    line-terminating semicolon."""
+    m = re.search(r"^const %s = .*?;$" % re.escape(name), src,
+                  re.MULTILINE | re.DOTALL)
     if not m:
         raise AssertionError("could not find `const %s` in the page" % name)
     return m.group(0)
@@ -152,6 +158,49 @@ class JsStringEscaping(unittest.TestCase):
         self.assertNotIn("tipFocus('${esc(b.worktree)}')", mp)
         self.assertNotIn("tipFinish(this, '${esc(b.worktree)}')", mp)
 
+    def test_pair_revoke_handler_is_injection_safe(self):
+        # C1: the device LABEL is attacker-chosen (pairing body) and lands in a
+        # revoke() onclick. A quote-breakout must arrive as data, never execute.
+        payload = "x');globalThis.__inject();('"
+        received, injected = self._run(PAIR, "escArg(NAME)", payload)
+        self.assertEqual(received, payload)
+        self.assertFalse(injected)
+
+    def test_limits_reserve_handler_is_injection_safe(self):
+        # C1: the account label (a ~/.claude-<label> basename) lands in a
+        # setReserve() onchange.
+        payload = "x');globalThis.__inject();('"
+        received, injected = self._run(LIMITS, "escArg(NAME)", payload)
+        self.assertEqual(received, payload)
+        self.assertFalse(injected)
+
+
+class NoHandlerSingleQuotesEscacrossPages(unittest.TestCase):
+    """C1 — the shape that survived four escaping passes: a value dropped into an
+    inline handler as `'${esc(x)}'`. esc() leaves `&#39;` for an apostrophe,
+    which the attribute decode turns back into `'` and the JS parser reads as a
+    string terminator. No page may carry it; escArg (own quotes, then esc) is the
+    only safe interpolation into a handler."""
+
+    # on<event>="...  '${  ...(any esc/raw expr)...  }..."  — the single quote
+    # immediately before an interpolation inside a double-quoted handler.
+    BAD = re.compile(r"""on[a-z]+\s*=\s*"[^"]*'\$\{""")
+
+    def test_no_page_interpolates_a_value_into_a_single_quoted_handler_arg(self):
+        for name in ("index.html", "map.html", "limits.html", "pair.html",
+                     "guide.html"):
+            src = (ROOT / name).read_text()
+            hits = self.BAD.findall(src)
+            self.assertEqual(hits, [], f"{name} still has a single-quoted "
+                             f"handler interpolation (C1): {hits}")
+
+    def test_every_page_that_needs_escarg_defines_it(self):
+        # pair.html and limits.html shipped without escArg — the reason C1 was
+        # unfixable there. Every page that has an inline handler must carry it.
+        for name in ("index.html", "map.html", "limits.html", "pair.html"):
+            src = (ROOT / name).read_text()
+            self.assertIn("escArg", src, f"{name} must define escArg")
+
 
 @unittest.skipUnless(NODE, "node not available")
 class MapLookupKeyAgreement(unittest.TestCase):
@@ -191,6 +240,129 @@ class MapLookupKeyAgreement(unittest.TestCase):
         # and the attribute is the escaped one
         self.assertIn('data-key="${esc(key)}"', src)
         self.assertNotIn('data-key="${key}"', src)
+
+
+# ------------------------------------------------ F4: Idempotency-Key on POSTs
+
+PAGES = (("index.html", INDEX), ("map.html", MAP), ("limits.html", LIMITS))
+
+
+def _post_sites(src):
+    """(index, the 240 chars that follow) for every mutation POST on a page."""
+    out, at = [], 0
+    while True:
+        at = src.find('method: "POST"', at)
+        if at == -1:
+            return out
+        out.append((at, src[at:at + 240]))
+        at += 1
+
+
+def _extract_fn(src, name):
+    """A `function <name>() { … }` block, verbatim, to its column-0 brace."""
+    start = src.index(f"function {name}(")
+    return src[start:src.index("\n}\n", start) + 3]
+
+
+class IdempotencyKeyIsSent(unittest.TestCase):
+    """F4 — the server's idempotency layer (orchestra/idem.py, wired in
+    `server.do_POST`) is OPT-IN per request: with no `Idempotency-Key` header
+    there is no reservation, no replay, and a retry that lands after a restart
+    re-runs the side effect. The iOS client has sent one on every mutation since
+    `Endpoint.freshIdempotency`; the three board pages sent none, so the client
+    on the same machine as the fleet was the unprotected one."""
+
+    def test_every_mutation_post_carries_the_headers(self):
+        for label, page in PAGES:
+            src = page.read_text()
+            sites = _post_sites(src)
+            self.assertTrue(sites, f"{label}: no POST found — did the page move?")
+            for at, window in sites:
+                self.assertIn("headers: idemHeaders()", window,
+                              f"{label}: the POST at offset {at} sends no key")
+
+    def test_no_page_still_hand_writes_a_content_type_only_header_on_a_post(self):
+        for label, page in PAGES:
+            for at, window in _post_sites(page.read_text()):
+                self.assertNotIn('headers: { "Content-Type": "application/json" }',
+                                 window, f"{label}: bare headers at offset {at}")
+
+    def test_the_routes_covered_are_the_server_s_mutation_routes(self):
+        """Not "some POSTs" — the ones idem.py actually guards. `/api/send`,
+        `/api/finish`, `/api/dispatch`, `/api/reserve` and both `/api/resume`
+        routes are the whole of `idem.MUTATION_ROUTES`; a board POST to one of
+        them without a key is a gap in the layer, not an oversight in a page."""
+        import orchestra as fb
+        joined = "".join(p.read_text() for _, p in PAGES)
+        for route in sorted(fb.idem.MUTATION_ROUTES):
+            stem = route.rsplit("/", 1)[0] if route.startswith("/api/resume") \
+                else route
+            self.assertIn(stem, joined, f"{route} is not reachable from the board")
+
+    def test_each_page_mints_its_own_key(self):
+        for label, page in PAGES:
+            src = page.read_text()
+            self.assertIn("function idemKey()", src, label)
+            self.assertIn("function idemHeaders()", src, label)
+            # per TAP, not per payload: the key is minted inside the mint, and
+            # nothing stores one on a module-level variable to be reused
+            self.assertNotIn("const IDEM_KEY", src, label)
+
+
+@unittest.skipUnless(NODE, "node not available")
+class IdempotencyHeaderShape(unittest.TestCase):
+    """The SHIPPED mint, run through node — the header names and the value
+    shapes have to match what `idem.begin` and `_idem_issued_at` read."""
+
+    def _mint(self, page, drop_random_uuid=False):
+        src = page.read_text()
+        driver = f"""
+        const self = globalThis;
+        {"delete crypto.randomUUID;" if drop_random_uuid else ""}
+        {_extract_fn(src, "idemKey")}
+        {_extract_fn(src, "idemHeaders")}
+        process.stdout.write(JSON.stringify([idemHeaders(), idemHeaders()]));
+        """
+        proc = subprocess.run([NODE, "-e", driver],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        import json
+        return json.loads(proc.stdout)
+
+    UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}"
+                      r"-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+    def test_the_header_names_are_the_ones_the_server_reads(self):
+        first, _ = self._mint(INDEX)
+        self.assertEqual(first["Content-Type"], "application/json")
+        self.assertIn("Idempotency-Key", first)
+        self.assertIn("Idempotency-Issued-At", first)
+
+    def test_two_taps_are_two_keys(self):
+        first, second = self._mint(INDEX)
+        self.assertNotEqual(first["Idempotency-Key"], second["Idempotency-Key"],
+                            "a reused key would replay the FIRST answer")
+
+    def test_the_key_is_a_v4_uuid_on_every_page(self):
+        for label, page in PAGES:
+            first, _ = self._mint(page)
+            self.assertRegex(first["Idempotency-Key"], self.UUID, label)
+
+    def test_the_fallback_mints_a_v4_uuid_too(self):
+        """`crypto.randomUUID` is exposed only in a secure context, and this
+        board is served over plain HTTP on the tailnet — which is precisely
+        where the phone opens it."""
+        first, second = self._mint(INDEX, drop_random_uuid=True)
+        self.assertRegex(first["Idempotency-Key"], self.UUID)
+        self.assertNotEqual(first["Idempotency-Key"], second["Idempotency-Key"])
+
+    def test_issued_at_is_a_float_epoch_in_seconds(self):
+        import time
+        first, _ = self._mint(INDEX)
+        raw = first["Idempotency-Issued-At"]
+        self.assertRegex(raw, r"^\d+\.\d{3}$", "a fixed '.' and milliseconds")
+        # inside idem.IDEM_EXPIRE_S of now, or the server refuses it as expired
+        self.assertLess(abs(float(raw) - time.time()), 60)
 
 
 if __name__ == "__main__":

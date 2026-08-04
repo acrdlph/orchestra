@@ -17,8 +17,8 @@
   --bg:#0d0d0d; --bg-2:#111111; --surface:#161616; --surface-2:#1c1c1c;
   --border:#2a2a2a; --border-2:#3a3a3a;
   --fg:#e8e6e3; --muted:#8a8784; --muted-2:#6a6764;
-  --accent:#d97757; --accent-2:#e8a87c; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
-  --accent-glow:rgba(217,119,87,.25);
+  --accent:#d97757; --accent-2:#edb9ac; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
+  --accent-glow:rgba(217,119,87,.12);
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
@@ -90,7 +90,7 @@ header {
 .chip.t { color:var(--accent-2); border-color:var(--accent-2); }
 .chip.f { color:var(--cyan); border-color:var(--cyan); }
 .chip.l { color:var(--yellow); border-color:var(--yellow); }
-.hint { font-family:var(--sans); color:var(--muted-2); font-size:var(--fs-xs); margin-left:auto; }
+.hint { font-family:var(--sans); color:var(--muted); font-size:var(--fs-xs); margin-left:auto; }
 
 #viz { margin:6px 0 40px; }
 svg { display:block; }
@@ -119,7 +119,7 @@ g.branchg:hover .bline { stroke-opacity:1; }
 #tip .hd { font-weight:600; font-size:var(--fs-md); }
 #tip .br { color:var(--cyan); }
 #tip .mut { color:var(--muted); }
-#tip .dim { color:var(--muted-2); }
+#tip .dim { color:var(--muted); }
 #tip .st { font-weight:600; letter-spacing:var(--track); font-size:var(--fs-2xs); }
 /* human voice: the commit subject; data lines stay mono via .mo */
 #tip .mut, #tip .dim { font-family:var(--sans); }
@@ -173,6 +173,22 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // the surrounding quotes; esc() then makes the result safe as an HTML attribute
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: tipFocus(${escArg(n)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
+// the server's layer is opt-in per request, so a mutation without these headers
+// is a mutation a retry can run twice. Minted PER TAP, never from the payload;
+// `crypto.randomUUID` is secure-context only and this page is served over plain
+// HTTP on the tailnet. index.html carries the long form of this note.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
 const C = { green:"#87b386", accent:"#d97757", accent2:"#e8a87c", cyan:"#7fb3c8",
             yellow:"#d4b06a", fg:"#e8e6e3", muted:"#8a8784", muted2:"#6a6764",
             border:"#2a2a2a", bg:"#0d0d0d" };
@@ -429,7 +445,7 @@ async function tipFinish(btn, wtName) {
   toast(`✓ finishing ${wtName}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ worktree: wtName }) });
     const d = await r.json();
     toast((d.ok ? "✓ " : "✗ ") + d.message);

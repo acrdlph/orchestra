@@ -44,6 +44,13 @@ handoff:
   > that broke the board, and it will silently break agents. A safe pruning policy for
   > `~/.claude*/projects` is arguably higher-value than anything left in Tier 1 — consider doing
   > it first. It needs the user's sign-off before any `rm` (their transcripts).
+  >
+  > **Since answered, and the shape of the answer is the point.** The premise "there's a backup
+  > job" was wrong: nothing copies the corpus, so the thing filling the disk is the user's own
+  > data and orchestra is not entitled to prune it. `disk.py` therefore REPORTS it (startup +
+  > `disk_report_h`, `--disk-report`; warns on `disk_warn_gb` / `disk_free_gb`) and prunes only
+  > orchestra's own two logs (`--prune-logs`, 7-day floor, audited). The `rm` on
+  > `~/.claude*/projects` is still the user's to type, and the report is what tells them when.
 
 **Your job:** Tier 1 of `PRODUCTION-READINESS.md` — **§4.1 is done, so start with §4.2 (the
 security review), then §4.3 (scopes)** — then the medium/low tail (§5). The criticals and highs

@@ -8,6 +8,10 @@ events.log.json
 events.log.json.tmp
 idem.store.json
 idem.store.json.tmp
+finish.closeouts.json
+finish.closeouts.json.tmp
+dispatch.jobs.json
+dispatch.jobs.json.tmp
 __pycache__/
 # the generated hook fragment + script (orchestra.hooks.install). Regenerated on
 # every dispatch, and it carries THIS machine's port — committing it would ship
@@ -21,3 +25,6 @@ nohup.out
 *.p8
 .orchestra/
 ios/Signing.xcconfig
+
+# per-boot pairing lockfile — runtime state, like devices.json
+devices.lock

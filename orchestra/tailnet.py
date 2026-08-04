@@ -44,6 +44,7 @@ a web page.
 """
 
 import ipaddress
+import json
 import re
 import socket
 import subprocess
@@ -110,6 +111,54 @@ def from_cli():
             if found:
                 return found
     return []
+
+
+def dns_name():
+    """This machine's MagicDNS name (`<host>.<tailnet>.ts.net`), or None.
+
+    Wanted for anything a PHONE will dial rather than anything this machine
+    will bind: the App Store build of the iOS client ships an ATS exception
+    for `ts.net` (with subdomains), which covers every tailnet's MagicDNS
+    names — and it cannot ship one for each user's raw `100.64/10` literal,
+    because an ATS exception is a plist key baked in at build time. So a QR
+    that hands the phone the IP works for exactly the tailnet whose IP was
+    baked in (the author's, historically), and a QR that hands the MagicDNS
+    name works for everyone.
+
+    None unless the tailnet actually says the name RESOLVES: `Self.DNSName`
+    is reported even on tailnets with MagicDNS switched off, and advertising
+    a name the phone cannot resolve is strictly worse than the IP. The
+    trailing dot is the DNS root, correct on the wire and noise in a URL.
+
+    And None unless the name is SHAPED like a MagicDNS name — this value is
+    advertised into the QR the phone scans (`pairing.advertised`), so it is
+    validated against `<label>.<…>.ts.net` before it leaves here (security
+    review L2). It matches the exact `ts.net` ATS exception the store build
+    carries; anything else would be a name the store app could not load even
+    if `tailscale` reported it, and a defence-in-depth boundary against a
+    `tailscale` output steered to some other host.
+    """
+    for binary in TAILSCALE:
+        out = _run([binary, "status", "--json"])
+        if out:
+            try:
+                st = json.loads(out)
+            except ValueError:
+                return None
+            if not (st.get("CurrentTailnet") or {}).get("MagicDNSEnabled"):
+                return None
+            name = ((st.get("Self") or {}).get("DNSName") or "").rstrip(".")
+            return name if _is_ts_name(name) else None
+    return None
+
+
+# `<label>.<tailnet>.ts.net`, lowercased: a leading alnum, then the LDH set,
+# ending in the literal `.ts.net` the store build's ATS exception names.
+_TS_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ts\.net$")
+
+
+def _is_ts_name(name):
+    return bool(_TS_NAME.fullmatch((name or "").lower()))
 
 
 def bindable(addr, port=0):

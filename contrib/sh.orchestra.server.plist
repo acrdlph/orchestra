@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  orchestra as a launchd user LaunchAgent — a TEMPLATE.
+
+  Every placeholder below is written in CAPITALS and every one of them must be
+  replaced before this file will load. There are four:
+
+      /PATH/TO/PYTHON3        `which python3`
+      /PATH/TO/ORCHESTRA      the repo checkout — the dir holding index.html
+      /PATH/TO/YOUR/CODE      what `--root` watches (repeat the pair for more)
+      /Users/YOU              your home directory, spelled out; launchd does
+                              not expand ~ anywhere in this file
+
+  Install, modern syntax (README.md § "Running it as a launchd agent"):
+
+      cp contrib/sh.orchestra.server.plist ~/Library/LaunchAgents/
+      launchctl bootstrap gui/$UID ~/Library/LaunchAgents/sh.orchestra.server.plist
+
+  This is a USER agent, not a daemon: it runs as you, in your GUI session, which
+  is what reading ~/.claude* and scripting Terminal.app both require. A
+  LaunchDaemon would run as root with no session to talk to and could do
+  neither.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>sh.orchestra.server</string>
+
+  <!-- `python3 -m orchestra` and not `./start.sh`: start.sh kills the listener,
+       backgrounds a new one with nohup and returns, so launchd would watch the
+       WRAPPER exit and restart it forever. The agent must be the server. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/PATH/TO/PYTHON3</string>
+    <string>-m</string>
+    <string>orchestra</string>
+    <string>--root</string>
+    <string>/PATH/TO/YOUR/CODE</string>
+    <!-- add `--tailnet` here to serve the phone; read the state-machine note
+         in the README first — it fails closed when Tailscale is not up yet -->
+  </array>
+
+  <!-- Required, not cosmetic. `-m orchestra` needs the package importable, and
+       the server reads index.html / map.html / stream.js out of the checkout
+       (config.HERE). launchd starts an agent in `/`. -->
+  <key>WorkingDirectory</key>
+  <string>/PATH/TO/ORCHESTRA</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Unconditional: restart it whether it exited 0 or crashed. The one exit
+       that is not a crash is a refused bind (`--tailnet` before Tailscale is
+       up, or a port already held), and that is exactly the case retrying
+       fixes. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- launchd's floor is 10 s; 30 keeps a fail-closed boot loop off the log
+       without making a real crash slow to recover from. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- One file for both streams, so a traceback lands in order next to the
+       line that preceded it. ~/Library/Logs is what Console.app shows. -->
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/orchestra.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/orchestra.log</string>
+
+  <!-- launchd hands an agent a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+       which is enough for git, ps and lsof and NOT enough for tmux, claude,
+       cclimits or the Tailscale CLI. Every one of those is optional, so a
+       thin PATH degrades silently: dispatch stops working and nothing says
+       why. Trim this to the dirs you actually use. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/Users/YOU/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- Interactive, not Background: Background caps the process at a low I/O
+       and CPU band, and the sweep shells out to git across every worktree. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

@@ -14,6 +14,12 @@ import SwiftUI
 /// second claim path to keep in step.
 struct PairingScreen: View {
     @Bindable var store: PairingStore
+    /// Open the demo fleet. **This is an App Store requirement, not a nicety**:
+    /// orchestra is a client for a server the reviewer does not have, and
+    /// "reviewer opened it, saw a screen it could not get past, rejected it" is
+    /// the standard way a companion app fails guideline 2.1. See
+    /// `docs/mobile/APPSTORE.md` §7 and §8 row 1.
+    var onExploreDemo: () -> Void = {}
 
     @State private var host = ""
     @State private var port = String(PairingTicket.defaultPort)
@@ -49,6 +55,7 @@ struct PairingScreen: View {
                         manualForm
                         pairButton
                         status
+                        demoEntry
                     }
                     .padding(Space.lg)
                 }
@@ -108,8 +115,12 @@ struct PairingScreen: View {
 
     private var manualForm: some View {
         VStack(alignment: .leading, spacing: Space.md) {
+            // The desktop's manual card advertises the MagicDNS name now
+            // (pairing.advertised), not the raw tailnet IP — and on a store
+            // build the IP would not load (ATS covers ts.net, not a literal).
+            // So the placeholder hints the shape a user should type.
             field("MAC ADDRESS", text: $host, focus: .host,
-                  placeholder: "100.113.110.31", keyboard: .URL)
+                  placeholder: "my-mac.tailnet.ts.net", keyboard: .URL)
             field("PORT", text: $port, focus: .port,
                   placeholder: "4242", keyboard: .numberPad)
             field("PAIRING CODE", text: $code, focus: .code,
@@ -165,6 +176,43 @@ struct PairingScreen: View {
                 .stroke(ticket == nil ? Palette.control : Palette.statusWorking, lineWidth: 1)
         )
         .disabled(ticket == nil || isPairing)
+    }
+
+    /// **The quiet sibling of Pair, and it must be reachable in one tap without
+    /// scrolling.**
+    ///
+    /// It sits directly under the primary action rather than above the fold in
+    /// place of one, because it is not what this screen is for — a person with a
+    /// Mac should pair, and the demo is the answer for a person who has not got
+    /// one yet. So it takes the outlined, unfilled form the app uses for every
+    /// secondary action, and the whole block is one 44 pt control plus a single
+    /// caption: measured on an iPhone 17 Pro Max, everything above it plus this
+    /// clears the fold with room, which is the property `APPSTORE.md` §8 row 1
+    /// turns on.
+    ///
+    /// The label is **exactly** `explore the demo fleet` — the review notes name
+    /// that string and the screenshot job looks for it.
+    private var demoEntry: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
+                .padding(.bottom, Space.xs)
+            Button(action: onExploreDemo) {
+                Label(DemoCopy.entryPoint, systemImage: "theatermasks")
+                    .font(OrcFont.button)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .foregroundStyle(Palette.statusFree)
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                    .stroke(Palette.control, lineWidth: 1)
+            )
+            .accessibilityHint("opens a built-in fleet with no server and no network")
+            Text(DemoCopy.entryPointNote)
+                .font(OrcFont.meta)
+                .foregroundStyle(Palette.textTertiary)
+        }
     }
 
     private var isPairing: Bool {

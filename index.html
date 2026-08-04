@@ -24,11 +24,11 @@
    headline numbers. Uppercase micro-labels get letter-spacing --track.
 ============================================================== */
 :root {
-  --bg:#0d0d0d; --bg-2:#111111; --surface:#161616; --surface-2:#1c1c1c;
+  --bg:#0d0d0d; --bg-2:#111111; --bg-dim:#0e0e0e; --surface:#161616; --surface-2:#1c1c1c;
   --border:#2a2a2a; --border-2:#3a3a3a;
   --fg:#e8e6e3; --muted:#8a8784; --muted-2:#6a6764;
-  --accent:#d97757; --accent-2:#e8a87c; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
-  --accent-glow:rgba(217,119,87,.25); --green-glow:rgba(135,179,134,.18);
+  --accent:#d97757; --accent-2:#edb9ac; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
+  --accent-glow:rgba(217,119,87,.12); --green-glow:rgba(135,179,134,.12);
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
@@ -139,7 +139,7 @@ header .wrap { max-width:none; }
   animation:pulse 1.6s var(--ease) infinite; }
 @keyframes pulse { 50% { box-shadow:0 0 10px var(--accent-glow); } }
 .card-head .procs { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
-.card-head .noproc { color:var(--muted-2); font-size:var(--fs-xs); }
+.card-head .noproc { color:var(--muted); font-size:var(--fs-xs); }
 .pidbtn {
   font:inherit; font-size:var(--fs-2xs); color:var(--muted); background:var(--bg-2);
   border:1px solid var(--border-2); border-radius:5px; padding:2.5px 8px; cursor:pointer;
@@ -197,7 +197,7 @@ header .wrap { max-width:none; }
 .dhead { display:flex; align-items:center; gap:10px; padding:12px 16px;
   border-bottom:1px solid var(--border); background:var(--surface); }
 .dhead .t { font-weight:600; font-size:var(--fs-md); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.dhead .sub { color:var(--muted-2); font-size:var(--fs-xs); }
+.dhead .sub { color:var(--muted); font-size:var(--fs-xs); }
 .dhead button { margin-left:auto; font:inherit; background:none; border:none;
   color:var(--muted); font-size:16px; cursor:pointer; }
 .dhead button:hover { color:var(--fg); }
@@ -228,20 +228,20 @@ header .wrap { max-width:none; }
 }
 .dfoot .send:hover { background:var(--accent-2); }
 .dfoot .send:disabled { opacity:.5; cursor:default; }
-.dnote { color:var(--muted-2); font-size:var(--fs-xs); line-height:1.55; }
+.dnote { color:var(--muted); font-size:var(--fs-xs); line-height:1.55; }
 .dnote b { color:var(--yellow); }
 .dresult { font-size:var(--fs-sm); color:var(--muted); background:var(--surface); border:1px solid var(--border);
   border-radius:8px; padding:10px 12px; line-height:1.6; }
 .dresult code { font-family:var(--mono); color:var(--cyan); }
 .logrow { border:1px solid var(--border); border-radius:8px; padding:8px 11px; margin-top:7px;
   background:var(--bg); font-size:var(--fs-xs); }
-.logrow .lt { color:var(--muted-2); }
+.logrow .lt { color:var(--muted); }
 .logrow .ls { font-weight:600; margin-left:8px; font-size:var(--fs-2xs); }
 .logrow .ls.on { color:var(--green); }
-.logrow .ls.off { color:var(--muted-2); }
+.logrow .ls.off { color:var(--muted); }
 .logrow .lm { color:var(--cyan); margin-left:8px; }
 .logrow .lchat { margin-left:8px; float:right; padding:2px 8px; font-size:var(--fs-2xs); }
-.logrow .lwait { margin-left:8px; float:right; color:var(--muted-2); font-size:var(--fs-2xs); }
+.logrow .lwait { margin-left:8px; float:right; color:var(--muted); font-size:var(--fs-2xs); }
 /* the brief stays clamped until clicked — full text on demand, not by default */
 .logrow .lx { color:var(--muted); margin-top:4px; line-height:1.5; cursor:pointer;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
@@ -254,7 +254,7 @@ header .wrap { max-width:none; }
   font-weight:600; margin-bottom:5px; }
 .sent .sl { color:var(--green); }
 .sent.bad .sl { color:var(--accent); }
-.sent .sn { color:var(--muted-2); font-weight:400; }
+.sent .sn { color:var(--muted); font-weight:400; }
 .sent .sentbar .abtn { margin-left:auto; padding:2px 8px; }
 .sent .sentx { color:var(--fg); font-size:var(--fs-sm); line-height:1.5; white-space:pre-wrap; }
 .proglive { border:1px solid var(--accent); border-radius:9px; padding:10px 12px;
@@ -284,16 +284,19 @@ header .wrap { max-width:none; }
 .sess.needs_input,
 .sess.blocked      { border-left-color:var(--accent); }
 .sess.waiting      { border-left-color:var(--accent-2); }
-.sess.ended        { border-left-color:var(--border-2); opacity:.55; }
+/* A darker GROUND, not opacity: an ended row still carries model, account,
+   age and topic, and opacity .55 put that text at 2.43:1 (UX.md Appendix E §4).
+   The app's `sunkenDim` token, ported back. */
+.sess.ended        { border-left-color:var(--border-2); background:var(--bg-dim); }
 .st.working  { color:var(--green); }
 .st.working .g { animation:blink 1.2s steps(1) infinite; }
 .st.needs_input { color:var(--accent); }
 .st.limit    { color:var(--yellow); }
 .st.blocked  { color:var(--yellow); }
 .st.waiting  { color:var(--accent-2); }
-.st.ended    { color:var(--muted-2); }
+.st.ended    { color:var(--muted); }
 .acct { color:var(--cyan); font-size:var(--fs-xs); }
-.meta { color:var(--muted-2); font-size:var(--fs-xs); }
+.meta { color:var(--muted); font-size:var(--fs-xs); }
 /* Hook-backed sessions (ADR 0007). QUIET ON PURPOSE. Most people's agents are
    not hooked and never will be — an agent you started yourself cannot be — so
    this must read as "this one is extra sure", never as "the others are
@@ -319,11 +322,11 @@ header .wrap { max-width:none; }
 .pending { color:var(--yellow); font-size:var(--fs-xs); margin-top:3px; }
 .pending.closeout { margin:4px 0 3px; }   /* closeout note sits between card-head and gitline */
 .hand { color:var(--green); font-size:var(--fs-xs); margin-top:3px; }
-.none { color:var(--muted-2); font-size:var(--fs-sm); padding:2px 6px 6px; }
+.none { color:var(--muted); font-size:var(--fs-sm); padding:2px 6px 6px; }
 
 /* ---- footer ---- */
 .other { margin-top:20px; color:var(--muted); font-size:var(--fs-sm); }
-.other h3 { font-size:var(--fs-2xs); font-weight:500; letter-spacing:var(--track); text-transform:uppercase; color:var(--muted-2); margin-bottom:6px; }
+.other h3 { font-size:var(--fs-2xs); font-weight:500; letter-spacing:var(--track); text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
 .controls { display:flex; gap:18px; margin:18px 0 6px; color:var(--muted); font-size:var(--fs-sm); flex-wrap:wrap; }
 .controls label { cursor:pointer; user-select:none; }
 .controls input { accent-color:var(--accent); margin-right:5px; vertical-align:-1px; }
@@ -375,6 +378,33 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: openChat(${escArg(k)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
 
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6).
+// The server's layer is OPT-IN PER REQUEST: no header, no protection. The phone
+// has sent these on every mutation since ios/…/Endpoint.swift; this board sent
+// nothing, so the one client sitting on the same machine as the fleet was the
+// one client whose retry could launch a second agent in a worktree.
+//
+// Minted PER TAP, never derived from the payload. One user action gets one key,
+// so a retry OF THAT ACTION replays the first answer instead of acting twice —
+// while the same brief launched again deliberately is a second tap, a second
+// key, and a second agent, which is what the user asked for. `Issued-At` is a
+// float epoch with a fixed '.'; the server refuses a key that waited longer
+// than IDEM_EXPIRE_S before arriving.
+//
+// `crypto.randomUUID` is secure-context only and this board is served over
+// plain HTTP on the tailnet, so the fallback is not decoration.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
+
 // The terminal chip for one session. It sits on the session row rather than the
 // card head so a worktree running several agents says which window is which —
 // the pairing comes from the process's CLAUDE_CONFIG_DIR matching the session's
@@ -389,7 +419,7 @@ function addr(o) {
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 }
 function procChip(p, { certain = true, title, wt, cwd } = {}) {
-  return `<button class="pidbtn${certain ? "" : " guess"}" onclick="focusPid(${p.pid}, '${esc(addr({ wt, cwd, tmux: p.tmux, tty: p.tty }))}')"
+  return `<button class="pidbtn${certain ? "" : " guess"}" onclick="focusPid(${p.pid}, ${escArg(addr({ wt, cwd, tmux: p.tmux, tty: p.tty }))})"
     title="${esc(title || "jump to this terminal")}">⌖ ${p.pid}${p.tty ? ` <span class="tt">${esc(p.tty)}</span>` : ""}${p.host ? ` ${esc(p.host)}` : ""}</button>`;
 }
 function sessProc(w, s) {
@@ -626,7 +656,7 @@ function render(st) {
 
   $("other").innerHTML = st.other_procs.length
     ? `<h3>other live agents (outside watched worktrees)</h3>` +
-      st.other_procs.map(p => `<div>⌁ <button class="pidbtn" onclick="focusPid(${p.pid}, '${esc(addr({ cwd: p.cwd }))}')">⌖ ${p.pid}${p.tty ? ` <span class="tt">${esc(p.tty)}</span>` : ""}${p.host ? ` ${esc(p.host)}` : ""}</button> ${p.cpu.toFixed(1)}% cpu · up ${esc(p.etime)} · ${esc(p.cwd || "?")}</div>`).join("")
+      st.other_procs.map(p => `<div>⌁ <button class="pidbtn" onclick="focusPid(${p.pid}, ${escArg(addr({ cwd: p.cwd }))})">⌖ ${p.pid}${p.tty ? ` <span class="tt">${esc(p.tty)}</span>` : ""}${p.host ? ` ${esc(p.host)}` : ""}</button> ${p.cpu.toFixed(1)}% cpu · up ${esc(p.etime)} · ${esc(p.cwd || "?")}</div>`).join("")
     : "";
 }
 
@@ -833,7 +863,7 @@ async function loadChatMsgs() {
 // delivered to whoever holds that number now.
 async function sendTo(pid, ident, text) {
   const r = await fetch("/api/send", { method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: idemHeaders(),
     body: JSON.stringify({ ...ident, pid, text }) });
   return r.json();
 }
@@ -885,7 +915,7 @@ document.addEventListener("click", async (ev) => {
   toast(closing ? `✕ closing ${wt}…` : `✓ finishing ${wt}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ worktree: wt }) });
     const d = await r.json();
     // the server's refusal no longer says "…went to the agent 4m ago" — it sends
@@ -968,22 +998,26 @@ function schedControls(w, s) {
   const key = `${w.name}|${s.sid}`;
   const r = SCHED[key];
   if (r && r.status === "pending")
-    return `<button class="abtn sched" onclick="openResumeDrawer('${esc(key)}')"
+    return `<button class="abtn sched" onclick="openResumeDrawer(${escArg(key)})"
       title="auto-resume armed — click to adjust or disarm">⏱ ${clock(r.due_at)}</button>`;
   if (r && r.status === "failed")
-    return `<button class="abtn sched bad" onclick="openResumeDrawer('${esc(key)}')"
+    return `<button class="abtn sched bad" onclick="openResumeDrawer(${escArg(key)})"
       title="auto-resume failed — ${esc(r.message || "click for details")}">⚠ auto</button>`;
   if (r)   // done, yet the session still reads limit — the message says why
-    return `<button class="abtn sched" onclick="openResumeDrawer('${esc(key)}')"
+    return `<button class="abtn sched" onclick="openResumeDrawer(${escArg(key)})"
       title="${esc(r.message || "auto-resume fired")}">✓ auto</button>`;
-  return `<button class="abtn" onclick="quickArm('${esc(key)}')"
+  return `<button class="abtn" onclick="quickArm(${escArg(key)})"
     title="arm auto-resume — 1 minute after the reset, 'continue' is typed into this agent's terminal">⏱ auto</button>`;
 }
 async function apiResume(path, body) {
   try {
     const r = await fetch(`/api/resume/${path}`, { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      headers: idemHeaders(), body: JSON.stringify(body) });
+    // 404 is the ONLY status that means "this server has no such route", and
+    // that is what the message below claims. An idempotency refusal (409/422)
+    // is this server answering in the board's own envelope — reading its
+    // `message` is the whole point of having sent a key.
+    if (r.status === 404) throw new Error(`HTTP ${r.status}`);
     return await r.json();
   } catch (e) {   // a pre-restart server has no /api/resume routes — say so
     return { ok: false, message: `request failed (${e.message}) — the server ` +
@@ -1046,9 +1080,9 @@ function openResumeDrawer(key) {
         style="display:${hasReset ? "none" : "block"}">
     </div>
     <div class="row">
-      <button class="send" onclick="armFromDrawer('${esc(key)}')">⏱ ${sched && sched.status === "pending" ? "re-arm" : "arm"} auto-resume</button>
+      <button class="send" onclick="armFromDrawer(${escArg(key)})">⏱ ${sched && sched.status === "pending" ? "re-arm" : "arm"} auto-resume</button>
       ${sched && sched.status === "pending"
-        ? `<button class="abtn" onclick="disarmResume('${esc(key)}')">✕ disarm</button>` : ""}
+        ? `<button class="abtn" onclick="disarmResume(${escArg(key)})">✕ disarm</button>` : ""}
     </div>
     ${hasReset ? "" : `<div class="dnote">this limit carries no reset timestamp — the time is yours to pick</div>`}`;
   const sel = $("rsWhen");
@@ -1296,7 +1330,7 @@ async function launchMission(missionArg) {
   st.scrollIntoView({ block: "nearest" });
   try {
     const r = await fetch("/api/dispatch", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ mission, worktree: $("mWt").value, account: $("mAcct").value,
                              model: $("mModel").value, effort: $("mEffort").value,
                              force_model: !!window._forceModel }) });
@@ -1335,7 +1369,7 @@ function showModelDecision(resp) {
     <div class="progline sub">${esc(resp.model)} would run into a limit / reserve. choose:</div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       ${opusBtn}
-      <button class="abtn" onclick="relaunch('${esc(resp.model)}', true)">⚑ use ${esc(resp.model)} anyway</button>
+      <button class="abtn" onclick="relaunch(${escArg(resp.model)}, true)">⚑ use ${esc(resp.model)} anyway</button>
       <button class="abtn" onclick="$('mStatus').innerHTML=''">✕ cancel</button>
     </div></div>`;
   $("mStatus").scrollIntoView({ block: "nearest" });

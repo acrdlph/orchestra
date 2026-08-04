@@ -2503,7 +2503,7 @@ Eleven marks, eleven distinct silhouettes, no cross-table collision.
 | `⚙` subagent | `gearshape.2.fill` |
 | `↳` handed_to | `arrow.turn.down.right` |
 | `↑ / ↓` | `arrow.up` / `arrow.down` |
-| `Δ` dirty | text `Δ` (basic Greek; covered) |
+| `Δ` dirty | text `∆` **U+2206 INCREMENT, not U+0394 GREEK CAPITAL DELTA** — corrected when the shipped faces were measured: IBM Plex Mono carries no Greek block at all, so the "basic Greek; covered" this row used to claim was false and the badge was falling back per glyph. U+2206 is present in all four faces and is the same drawing. |
 | `ᴹ` model-scoped | **deleted** — replaced by a real `model cap` pill at `label` size |
 | `①②③④⑤` | passthrough — verbatim server prose; the coverage test *warns* rather than fails for server-supplied strings |
 

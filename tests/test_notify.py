@@ -29,8 +29,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import orchestra as fb  # noqa: E402
 from orchestra import notify  # noqa: E402
-from orchestra.notify import (project, derive, Event, EventLog, Notifier,
-                              Preferences, compose, quiet_now, Budget,
+# The functions are reached as `notify.project` / `notify.derive` /
+# `notify.compose` / `notify.quiet_now` — a module-level from-import of a
+# function freezes it at import time and defeats the suite's only mocking seam
+# (ARCHITECTURE §4.5, enforced by tests/test_zero_deps.py TestMockability).
+from orchestra.notify import (Event, EventLog, Notifier,
+                              Preferences, Budget,
                               EMPTY_PROJECTION)
 
 
@@ -62,24 +66,24 @@ class TestProjection(unittest.TestCase):
                             "live_procs": [{"pid": 1, "cpu": 0.5, "etime": "01:00"}],
                             "sessions": [{"sid": "s1", "status": "working",
                                           "account": "a", "model": "opus"}]}}
-        p1 = project(Snap())
+        p1 = notify.project(Snap())
         Snap.cards["wt"]["live_procs"][0]["cpu"] = 0.9
         Snap.cards["wt"]["live_procs"][0]["etime"] = "02:00"
-        p2 = project(Snap())
+        p2 = notify.project(Snap())
         self.assertEqual(p1["sessions"], p2["sessions"])
-        self.assertEqual(derive(p1, p2), [])
+        self.assertEqual(notify.derive(p1, p2), [])
 
     def test_it_reads_a_dict_snapshot_too(self):
         snap = {"worktrees": [{"name": "wt", "availability": "free",
                                "sessions": []}]}
-        p = project(snap)
+        p = notify.project(snap)
         self.assertEqual(p["worktrees"], {"wt": "free"})
 
     def test_a_finished_dispatch_job_projects_its_result(self):
         jobs = {"job-1": {"done": True,
                           "result": {"ok": True, "worktree": "wt",
                                      "account": "a", "session": "mission-x"}}}
-        p = project(dispatch_jobs=jobs)
+        p = notify.project(dispatch_jobs=jobs)
         self.assertEqual(p["dispatch"]["job-1"]["ok"], True)
         self.assertEqual(p["dispatch"]["job-1"]["worktree"], "wt")
 
@@ -91,7 +95,7 @@ class TestDeriveSessionEdges(unittest.TestCase):
     def edge(self, before, after, **kw):
         p1 = proj(sessions={"s1": sess(before)} if before else {})
         p2 = proj(sessions={"s1": sess(after, **kw)})
-        return derive(p1, p2, now=1000.0)
+        return notify.derive(p1, p2, now=1000.0)
 
     def test_into_needs_input(self):
         evs = self.edge("working", "needs_input")
@@ -118,7 +122,7 @@ class TestDeriveSessionEdges(unittest.TestCase):
         only a crossing INTO an attention status is."""
         p1 = proj()
         p2 = proj(sessions={"s1": sess("working")})
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
     def test_a_model_scoped_limit_strands_one_session(self):
         evs = self.edge("waiting", "limit")
@@ -137,21 +141,21 @@ class TestDeriveAccountEdges(unittest.TestCase):
     def test_account_becomes_exhausted(self):
         p1 = proj(accounts={"work": {"exhausted": False}})
         p2 = proj(accounts={"work": {"exhausted": True, "group": "weekly"}})
-        evs = derive(p1, p2, now=1.0)
+        evs = notify.derive(p1, p2, now=1.0)
         self.assertEqual(evs[0].type, "account.limit_hit")
         self.assertEqual(evs[0].account, "work")
 
     def test_account_resets(self):
         p1 = proj(accounts={"work": {"exhausted": True}})
         p2 = proj(accounts={"work": {"exhausted": False}})
-        evs = derive(p1, p2, now=1.0)
+        evs = notify.derive(p1, p2, now=1.0)
         self.assertEqual(evs[0].type, "account.limit_reset")
         self.assertEqual(evs[0].level, "P3")
 
     def test_a_still_exhausted_account_is_silent(self):
         p1 = proj(accounts={"work": {"exhausted": True}})
         p2 = proj(accounts={"work": {"exhausted": True}})
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
 
 class TestDeriveResumeEdges(unittest.TestCase):
@@ -162,11 +166,11 @@ class TestDeriveResumeEdges(unittest.TestCase):
         p1 = proj(resumes={"wt|s1": {"status": "pending", **base}})
         p2 = proj(resumes={"wt|s1": {"status": "done", "message": "sent", **base}})
         p3 = proj(resumes={"wt|s1": {"status": "failed", "message": "no reach", **base}})
-        self.assertEqual(derive(p0, p1, now=1.0)[0].type, "resume.armed")
-        fired = derive(p1, p2, now=1.0)[0]
+        self.assertEqual(notify.derive(p0, p1, now=1.0)[0].type, "resume.armed")
+        fired = notify.derive(p1, p2, now=1.0)[0]
         self.assertEqual(fired.type, "resume.fired")
         self.assertEqual(fired.detail, "sent")
-        failed = derive(p2, p3, now=1.0)[0]
+        failed = notify.derive(p2, p3, now=1.0)[0]
         self.assertEqual(failed.type, "resume.failed")
         self.assertEqual(failed.level, "P1")
 
@@ -177,13 +181,13 @@ class TestDeriveDispatchEdges(unittest.TestCase):
         p0 = proj()
         ok = proj(dispatch={"j1": {"done": True, "ok": True, "worktree": "wt"}})
         bad = proj(dispatch={"j2": {"done": True, "ok": False, "worktree": "wt2"}})
-        self.assertEqual(derive(p0, ok, now=1.0)[0].type, "dispatch.succeeded")
-        self.assertEqual(derive(p0, bad, now=1.0)[0].type, "dispatch.failed")
+        self.assertEqual(notify.derive(p0, ok, now=1.0)[0].type, "dispatch.succeeded")
+        self.assertEqual(notify.derive(p0, bad, now=1.0)[0].type, "dispatch.failed")
 
     def test_a_running_job_is_not_an_edge(self):
         p0 = proj()
         running = proj(dispatch={"j1": {"done": False, "ok": False}})
-        self.assertEqual(derive(p0, running, now=1.0), [])
+        self.assertEqual(notify.derive(p0, running, now=1.0), [])
 
 
 class TestDeriveWorktreeFree(unittest.TestCase):
@@ -191,19 +195,19 @@ class TestDeriveWorktreeFree(unittest.TestCase):
     def test_busy_to_free(self):
         p1 = proj(worktrees={"wt": "busy"})
         p2 = proj(worktrees={"wt": "free"})
-        self.assertEqual(derive(p1, p2, now=1.0)[0].type, "worktree.free")
+        self.assertEqual(notify.derive(p1, p2, now=1.0)[0].type, "worktree.free")
 
     def test_appearing_free_is_not_an_edge(self):
         """A worktree that is free the first time we see it was not FREED — it
         was already free. Only a transition into free is the event."""
         p1 = proj()
         p2 = proj(worktrees={"wt": "free"})
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
     def test_free_to_free_is_silent(self):
         p1 = proj(worktrees={"wt": "free"})
         p2 = proj(worktrees={"wt": "free"})
-        self.assertEqual(derive(p1, p2, now=1.0), [])
+        self.assertEqual(notify.derive(p1, p2, now=1.0), [])
 
 
 class TestGenerationCounter(unittest.TestCase):
@@ -213,9 +217,9 @@ class TestGenerationCounter(unittest.TestCase):
         gens = {}
         p_w = proj(sessions={"s1": sess("working")})
         p_n = proj(sessions={"s1": sess("needs_input")})
-        e1 = derive(p_w, p_n, now=1.0, gens=gens)[0]
-        e2 = derive(p_n, p_w, now=2.0, gens=gens)   # answered
-        e3 = derive(p_w, p_n, now=3.0, gens=gens)[0]  # asked again
+        e1 = notify.derive(p_w, p_n, now=1.0, gens=gens)[0]
+        e2 = notify.derive(p_n, p_w, now=2.0, gens=gens)   # answered
+        e3 = notify.derive(p_w, p_n, now=3.0, gens=gens)[0]  # asked again
         self.assertNotEqual(e1.dedupe_key, e3.dedupe_key,
                             "a re-asked question must get a fresh dedupe key")
         self.assertTrue(e1.dedupe_key.endswith("|1"))
@@ -309,9 +313,9 @@ class TestPreferencesAndQuietHours(unittest.TestCase):
         p = Preferences(quiet_from="23:00", quiet_to="08:00", tz_offset_min=0)
         # 02:00 UTC is inside the window
         two_am = 2 * 3600
-        self.assertTrue(quiet_now(p, now=two_am))
+        self.assertTrue(notify.quiet_now(p, now=two_am))
         # 12:00 UTC is outside it
-        self.assertFalse(quiet_now(p, now=12 * 3600))
+        self.assertFalse(notify.quiet_now(p, now=12 * 3600))
 
     def test_quiet_hours_are_in_the_devices_zone_not_the_servers(self):
         """A phone in California and a server in UTC must both mean the phone's
@@ -319,10 +323,10 @@ class TestPreferencesAndQuietHours(unittest.TestCase):
         p = Preferences(quiet_from="23:00", quiet_to="08:00",
                         tz_offset_min=-480)
         ten_utc = 10 * 3600            # == 02:00 in the device's zone
-        self.assertTrue(quiet_now(p, now=ten_utc))
+        self.assertTrue(notify.quiet_now(p, now=ten_utc))
 
     def test_no_window_is_never_quiet(self):
-        self.assertFalse(quiet_now(Preferences(), now=2 * 3600))
+        self.assertFalse(notify.quiet_now(Preferences(), now=2 * 3600))
 
 
 # ------------------------------------------------------------------ compose
@@ -339,37 +343,37 @@ class TestCompose(unittest.TestCase):
     def test_the_title_carries_no_leading_glyph(self):
         """A glyph in the title makes VoiceOver speak the codepoint before
         every alert (UX.md §8.5). It lives in the subtitle instead."""
-        c = compose(self.ev())
+        c = notify.compose(self.ev())
         self.assertNotIn("▲", c["payload"]["aps"]["alert"]["title"])
         self.assertIn("▲", c["payload"]["aps"]["alert"]["subtitle"])
 
     def test_no_prose_rides_the_wire_under_structural_privacy(self):
         """The default. Identifiers only; the transcript line is fetched by the
         NSE over the tailnet and never transits Apple."""
-        c = compose(self.ev(detail="should I rotate the JWT per request?"),
+        c = notify.compose(self.ev(detail="should I rotate the JWT per request?"),
                     privacy="structural")
         blob = repr(c["payload"])
         self.assertNotIn("rotate the JWT", blob)
         self.assertNotIn("body", c["payload"]["aps"]["alert"])
 
     def test_detail_privacy_includes_the_body(self):
-        c = compose(self.ev(detail="the question text"), privacy="detail")
+        c = notify.compose(self.ev(detail="the question text"), privacy="detail")
         self.assertEqual(c["payload"]["aps"]["alert"]["body"], "the question text")
 
     def test_expiration_is_an_absolute_epoch(self):
         """`int(at + ttl)`, never a bare duration — a duration means "expired
         in 1970", one attempt, no store-and-forward."""
-        c = compose(self.ev())
+        c = notify.compose(self.ev())
         self.assertGreater(c["headers"]["expiration"], 1784636700)
         self.assertIsInstance(c["headers"]["expiration"], int)
 
     def test_p1_is_time_sensitive_and_priority_10(self):
-        c = compose(self.ev("session.needs_answer"))
+        c = notify.compose(self.ev("session.needs_answer"))
         self.assertEqual(c["payload"]["aps"]["interruption-level"], "time-sensitive")
         self.assertEqual(c["headers"]["priority"], 10)
 
     def test_p3_is_passive_priority_5_and_silent(self):
-        c = compose(self.ev("account.limit_reset", account="work"))
+        c = notify.compose(self.ev("account.limit_reset", account="work"))
         self.assertEqual(c["payload"]["aps"]["interruption-level"], "passive")
         self.assertEqual(c["headers"]["priority"], 5)
         self.assertNotIn("sound", c["payload"]["aps"])
@@ -377,11 +381,11 @@ class TestCompose(unittest.TestCase):
     def test_a_discrete_fact_never_collapses(self):
         """A collapse-id supersedes an undelivered push — on a discrete fact it
         deletes history, so none of ours sets it."""
-        c = compose(self.ev("session.needs_answer"))
+        c = notify.compose(self.ev("session.needs_answer"))
         self.assertIsNone(c["headers"]["collapse_id"])
 
     def test_thread_id_groups_by_worktree(self):
-        c = compose(self.ev(), server="studio-mac")
+        c = notify.compose(self.ev(), server="studio-mac")
         self.assertEqual(c["payload"]["aps"]["thread-id"],
                          "studio-mac|ConfidAI-auth")
 

@@ -66,16 +66,25 @@ SOURCE = Path(__file__).resolve().parent / "qr_ref.swift"
 # over. A payload of lowercase and punctuation alone leaves the reference no
 # denser mode to reach for, and there the comparison is exact.
 
+# The two tailnet hostnames these cases carry. Named rather than inlined, and
+# fictional rather than this author's machine: a test fixture is read by
+# everyone who clones the repo, and one that hard-codes whose laptop it was
+# recorded on is a fact about the recording, not about QR encoding. The LENGTHS
+# are load-bearing — they are what puts each case in the version it is there to
+# exercise — so the replacements match character for character (31 and 37).
+REF_HOST = "someones-laptop-pro.tail.ts.net"
+REF_TAILNET_HOST = "someones-laptop-pro.tail0a1b2c.ts.net"
+
 # Byte mode is forced for both encoders: compared MODULE FOR MODULE.
 MATRIX_CASES = [
     ("a", "M"),
     ("a", "H"),
     ("~!@#$%^&*()_+-=[]{}|;:,.<>?", "M"),
     ("orc", "L"),
-    ("orc://p?h=achills-macbook-pro.tail.ts.net", "M"),
-    ("orc://p?h=achills-macbook-pro.tail.ts.net", "L"),
-    ("orc://p?h=achills-macbook-pro.tail.ts.net", "Q"),
-    ("orc://p?h=achills-macbook-pro.tail.ts.net", "H"),
+    (f"orc://p?h={REF_HOST}", "M"),
+    (f"orc://p?h={REF_HOST}", "L"),
+    (f"orc://p?h={REF_HOST}", "Q"),
+    (f"orc://p?h={REF_HOST}", "H"),
     ("x" * 100, "M"),
     ("x" * 120, "Q"),           # version 9
     ("x" * 130, "M"),           # version 8
@@ -90,10 +99,10 @@ MATRIX_CASES = [
 DECODE_CASES = [
     ("orc://p?h=100.113.110.31&p=4242&c=7K3M9QP2", "M"),
     ("orc://p?h=100.113.110.31&c=7K3M9QP2", "M"),
-    ("orc://p?h=achills-macbook-pro.tail1205d9.ts.net&p=4242&c=7K3M9QP2", "M"),
-    ("orc://p?h=achills-macbook-pro.tail1205d9.ts.net&p=4242&c=7K3M9QP2", "L"),
-    ("orc://p?h=achills-macbook-pro.tail1205d9.ts.net&p=4242&c=7K3M9QP2", "Q"),
-    ("orc://p?h=achills-macbook-pro.tail1205d9.ts.net&p=4242&c=7K3M9QP2", "H"),
+    (f"orc://p?h={REF_TAILNET_HOST}&p=4242&c=7K3M9QP2", "M"),
+    (f"orc://p?h={REF_TAILNET_HOST}&p=4242&c=7K3M9QP2", "L"),
+    (f"orc://p?h={REF_TAILNET_HOST}&p=4242&c=7K3M9QP2", "Q"),
+    (f"orc://p?h={REF_TAILNET_HOST}&p=4242&c=7K3M9QP2", "H"),
     ("http://100.113.110.31:4242/pair", "M"),
     ("0123456789", "L"),
     ("orc://p?h=" + "n" * 60 + "&p=4242&c=ABCD2345", "M"),

@@ -32,9 +32,20 @@ public enum LinkState: Sendable, Equatable {
     case offline(OrchestraError)
     /// 401. **Never retried** — a token problem is not a network problem.
     case unauthorized
+    /// **No link at all, and a board on screen anyway** — the demo fleet.
+    ///
+    /// It is its own case rather than a borrowed `.live` for the reason this bar
+    /// exists at all: `live v82` over a canned board is exactly the lie every
+    /// other state here is shaped to prevent. `isLive` is false, so nothing that
+    /// keys on liveness — the retry arrow, the version chip, the diagnostics'
+    /// green — can mistake it for a connection.
+    case demo
 
     /// Whether the board should be trusted as current.
     public var isLive: Bool { self == .live }
+
+    /// Whether this board came from nowhere. See `DemoPayload`.
+    public var isDemo: Bool { self == .demo }
 }
 
 /// How old the data on screen is, decided against an explicit `now`.
@@ -185,6 +196,19 @@ public final class FleetStore {
     private static let sidePeriodLive: TimeInterval = 20
     private static let sidePeriodPolling: TimeInterval = 5
 
+    /// The demo fleet, while it is on screen. Nil in every real session.
+    ///
+    /// It is held HERE, on the board's own store, because every screen that
+    /// needs it already holds this store: the chat screen looks its transcript
+    /// up by sid, and every mutation site asks `isDemo` before it offers to act.
+    /// A separate object would be a fifth thing to thread through four
+    /// initialisers, and the fourth one is where it would get forgotten.
+    public private(set) var demo: DemoPayload?
+
+    /// Whether the board on screen is invented. The single question every
+    /// mutation path in the app asks before it offers to do anything.
+    public var isDemo: Bool { demo != nil }
+
     /// The device's own network path. Read by the stream loop to avoid burning
     /// reconnect attempts against a radio that has nothing to reach, and by the
     /// UI to tell "this phone has no network" apart from "the server is not
@@ -215,6 +239,12 @@ public final class FleetStore {
         guard state != nil, let lastBoardDataAt else { return .absent }
         let boardAge = now.timeIntervalSince(lastBoardDataAt)
         switch link {
+        case .demo:
+            // A canned board is never stale: its ages were computed against the
+            // instant it loaded and they tick correctly forever. Dimming it
+            // after forty-five seconds — which every other non-live state does,
+            // correctly — would tell a reviewer the app is broken.
+            return .fresh
         case .live:
             // A quiet fleet keeps the socket warm with keepalives, so it is
             // SILENCE — not board age — that says the socket wedged. Board age
@@ -245,6 +275,12 @@ public final class FleetStore {
     /// iOS will do instead of keeping one alive is leave the server holding one
     /// of its 32 subscriber slots for a client that is not there.
     public func start() {
+        // The demo board has no server behind it. Opening a socket or starting
+        // the pump would spend a `/api/state` against an unpaired client, get
+        // `.unauthorized`, and `note()` would clear the board the reviewer is
+        // looking at. Every entry point into the network is closed here, in one
+        // place, rather than at four call sites.
+        guard !isDemo else { return }
         path.start()
         if streamTask == nil {
             streamTask = Task { [weak self] in await self?.streamLoop() }
@@ -268,6 +304,7 @@ public final class FleetStore {
     /// server decides which, from the cursor, and the client never has to know
     /// which case it was in.
     public func resume() async {
+        guard !isDemo else { return }
         start()
         await refreshSide(force: true)
     }
@@ -277,6 +314,9 @@ public final class FleetStore {
     /// Pull-to-refresh. Fetches the side facts, and — when the stream is not
     /// live — the whole board with them.
     public func refresh() async {
+        // Pull-to-refresh reaches here from the board, the worktree screen and
+        // the connection bar's arrow. On a demo board there is nothing to ask.
+        guard !isDemo else { return }
         await refreshSide(force: true)
         // A refresh gesture on a dead stream is also a request to try again now.
         if !link.isLive {
@@ -382,7 +422,7 @@ public final class FleetStore {
         if !holdingVersion { return true } // nothing to lose
         switch link {
         case .offline, .refused: return true       // polling is the board now
-        case .idle, .connecting, .reconnecting, .live, .unauthorized: return false
+        case .idle, .connecting, .reconnecting, .live, .unauthorized, .demo: return false
         }
     }
 
@@ -664,6 +704,37 @@ public final class FleetStore {
         }
     }
 
+    // MARK: - The demo fleet
+
+    /// Put a canned board on screen, through exactly the path a real one takes.
+    ///
+    /// **`ingest` — not a hand-built `FleetState`.** The frame goes through
+    /// `FleetApplier.apply`, which is the port of `stream.js`'s applier the live
+    /// board runs; `order`, `counts`, `other_procs` and `freshness` all land the
+    /// way a snapshot lands, and `composed(side:)` derives `free_worktrees` the
+    /// way it always does. A demo assembled around the applier would be a demo of
+    /// a board this app cannot receive.
+    ///
+    /// `link` is set to `.demo` **after** the ingest, because `ingest` sets
+    /// `.live` — that is correct for a frame off a socket and is the one thing
+    /// this board must not claim.
+    public func loadDemo(_ payload: DemoPayload) {
+        stop()                       // no socket, no pump, nothing to poll
+        demo = payload
+        side = payload.side
+        _ = ingest(payload.frame)
+        link = .demo
+    }
+
+    /// Drop the demo whole and go back to having nothing, which is the honest
+    /// state of an unpaired app.
+    public func exitDemo() {
+        demo = nil
+        serverDidChange()
+        framesApplied = 0
+        link = .idle
+    }
+
     /// Seed from a `/api/state` body. Public for tests and for anything that has
     /// a board before it has a stream.
     public func apply(_ fresh: FleetState) {
@@ -713,11 +784,13 @@ extension LinkState {
         case .refused(let why): why
         case .offline(let e): e.headline
         case .unauthorized: "this device is no longer paired"
+        case .demo: DemoCopy.link
         }
     }
 
     public var symbol: String {
         switch self {
+        case .demo: "theatermasks"
         case .idle: "circle.dotted"
         case .connecting: "circle.dashed"
         case .live: "bolt.horizontal.circle.fill"

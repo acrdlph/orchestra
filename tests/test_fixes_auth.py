@@ -226,5 +226,129 @@ class TestRegistryFlock(FixCase):
         self.assertIsNotNone(fb.auth.revoke_device(devid))
 
 
+# ------------------------------------------------ H1: side-effecting GETs cross-site
+
+class TestActingGetsAreCrossSiteGuarded(FixCase):
+    """A GET that ACTS is reachable from a page you merely VISIT.
+
+    `same_origin` waves a tag-initiated GET through — an `<img>`/`<script>`
+    sends no `Origin`, and absent is same-origin per fetch — so `/api/focus`
+    (osascript), `/api/events` (an SSE slot; 32 exhaust the ceiling) and
+    `/api/limits?refresh=1` (cclimits) were reachable cross-site from any web
+    page. The close is `Sec-Fetch-Site`, a header a browser sets and page JS
+    cannot: PRESENT and cross-site is refused; ABSENT (curl, phone, loopback)
+    still passes because it arrived with a token or loopback trust.
+    """
+
+    LOOPBACK = "127.0.0.1"
+    HOST = "127.0.0.1:4242"
+
+    def test_a_cross_site_tag_get_to_focus_is_refused(self):
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/focus?pid=1",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="cross-site")
+        self.assertEqual((v.status, v.code), (403, fb.auth.CROSS_SITE))
+
+    def test_a_cross_site_tag_get_to_events_is_refused(self):
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/events",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="cross-site")
+        self.assertEqual((v.status, v.code), (403, fb.auth.CROSS_SITE))
+
+    def test_a_cross_site_refresh_limits_is_refused(self):
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/limits?refresh=1",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="cross-site")
+        self.assertEqual((v.status, v.code), (403, fb.auth.CROSS_SITE))
+
+    def test_a_plain_limits_read_is_not_guarded(self):
+        # a read that does not spawn cclimits is not an acting GET, so a
+        # cross-site value does not refuse it (it is just data).
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/limits",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="cross-site")
+        self.assertTrue(v.ok)
+
+    def test_the_same_origin_sse_open_still_passes(self):
+        # the board's own EventSource — same-origin, loopback, no token.
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/events",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="same-origin")
+        self.assertTrue(v.ok)
+
+    def test_a_bearer_token_curl_with_no_header_passes(self):
+        # a non-browser client sends no Sec-Fetch-Site; it carries a token. It
+        # also sends no Host here (curl need not), which host_allowed passes —
+        # this test is about the Sec-Fetch guard, not the host allowlist.
+        _, token = fb.auth.add_device("cli")
+        v = fb.auth.check(TAILNET, f"Bearer {token}", "GET", "/api/focus?pid=1",
+                          now=1000.0)
+        self.assertTrue(v.ok)
+
+    def test_a_loopback_curl_with_no_header_passes(self):
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/focus?pid=1",
+                          now=1000.0, host=self.HOST)
+        self.assertTrue(v.ok)
+
+    def test_an_unrecognised_sec_fetch_value_fails_closed(self):
+        # page JS cannot set this header, so a value outside the known set is
+        # not a browser we trust — refuse, do not guess.
+        v = fb.auth.check(self.LOOPBACK, None, "GET", "/api/focus?pid=1",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="banana")
+        self.assertEqual((v.status, v.code), (403, fb.auth.CROSS_SITE))
+
+    def test_the_cross_site_refusal_does_not_spend_the_budget(self):
+        # a visited page hammering /api/focus must not lock out the real phone.
+        for _ in range(fb.auth.FAIL_BURST * 3):
+            fb.auth.check(self.LOOPBACK, None, "GET", "/api/focus",
+                          now=1000.0, host=self.HOST,
+                          sec_fetch_site="cross-site")
+        _, token = fb.auth.add_device("phone")
+        self.assertTrue(fb.auth.check(TAILNET, f"Bearer {token}", "GET",
+                                      "/api/state", now=1000.0).ok)
+
+    def test_events_opens_are_audited(self):
+        # the audit half of H1: an /api/events open earns a line, where before
+        # `audited("GET", "/api/events")` was False.
+        self.assertTrue(fb.auth.audited("GET", "/api/events"))
+        self.assertTrue(fb.auth.audited("GET", "/api/events?foo=1"))
+        fb.auth.check(self.LOOPBACK, None, "GET", "/api/events", now=1000.0,
+                      host=self.HOST, sec_fetch_site="same-origin")
+        line, = fb.auth.read_audit()
+        self.assertEqual((line["path"], line["outcome"]),
+                         ("/api/events", "allow"))
+
+
+# --------------------------------------------- M2: _under_admin on the raw path
+
+class TestAdminDecidesOnRawPath(FixCase):
+    """`_under_admin` decides on the RAW request path, so a traversal that slips
+    under the `self` carve-out must fail safe to admin, never self-service — the
+    twin of the `/api/v1/devicesX` incident."""
+
+    def test_a_traversal_under_self_is_not_self_service(self):
+        # matches SELF_SUBTREE + "/" by prefix, yet addresses another device's
+        # revoke; before the fix this classified as self and returned False.
+        p = "/api/v1/devices/self/../aabbccdd/revoke"
+        self.assertTrue(fb.auth._under_admin(p))
+        self.assertTrue(fb.auth.admin("POST", p))
+
+    def test_a_double_slash_is_admin_required(self):
+        self.assertTrue(fb.auth._under_admin("/api/v1/devices//self"))
+
+    def test_a_percent_encoded_slash_is_admin_required(self):
+        self.assertTrue(
+            fb.auth._under_admin("/api/v1/devices/self%2f..%2faabbccdd/revoke"))
+        self.assertTrue(
+            fb.auth._under_admin("/api/v1/devices/self%2F../x/revoke"))
+
+    def test_a_clean_self_route_is_still_self_service(self):
+        # the guard must not have swallowed the legitimate self subtree.
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self"))
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self/push"))
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self/settings"))
+
+
 if __name__ == "__main__":
     unittest.main()

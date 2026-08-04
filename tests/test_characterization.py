@@ -8,6 +8,13 @@ To accept an intentional behaviour change, re-record and commit the golden in th
 that changes behaviour, so the diff shows exactly which cases moved:
 
     python3 tests/characterize.py --record
+
+The golden names the machine it was recorded on — `"user"` (from `getpass.getuser()`) and
+`"hostname"`, both of which `collect_state` puts on the wire — and that is left exactly as it
+is, on purpose. This file is a RECORDING, not a fixture somebody authored: editing values into
+it by hand makes it disagree with what `--record` produces, which is the one property the net
+has. The hand-written fixtures that DID name a machine (`tests/qr_ref.py`, and the QR digest
+case in `tests/test_qr.py`) were the ones worth neutralising, and were.
 """
 
 import pathlib

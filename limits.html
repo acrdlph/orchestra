@@ -17,8 +17,8 @@
   --bg:#0d0d0d; --bg-2:#111111; --surface:#161616; --surface-2:#1c1c1c;
   --border:#2a2a2a; --border-2:#3a3a3a;
   --fg:#e8e6e3; --muted:#8a8784; --muted-2:#6a6764;
-  --accent:#d97757; --accent-2:#e8a87c; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
-  --accent-glow:rgba(217,119,87,.25);
+  --accent:#d97757; --accent-2:#edb9ac; --green:#87b386; --cyan:#7fb3c8; --yellow:#d4b06a;
+  --accent-glow:rgba(217,119,87,.12);
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
@@ -87,7 +87,7 @@ button {
 button:hover { color:var(--fg); border-color:var(--accent); }
 button.danger { color:var(--accent-2); }
 button:disabled { opacity:.5; cursor:wait; }
-.meta-line { color:var(--muted-2); font-size:var(--fs-xs); margin-left:auto; }
+.meta-line { color:var(--muted); font-size:var(--fs-xs); margin-left:auto; }
 
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(390px,1fr)); gap:12px; }
 .acct { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
@@ -103,28 +103,28 @@ button:disabled { opacity:.5; cursor:wait; }
 .ahead .tag.gone { color:var(--yellow); border-color:var(--yellow); }
 /* headline number wears the sans — same rule as the board's stat tiles */
 .ahead .hr { margin-left:auto; font-family:var(--sans); font-size:var(--fs-xl); font-weight:600; }
-.ahead .hr .u { font-size:var(--fs-2xs); color:var(--muted-2); font-weight:500; }
-.dirline { padding:7px 15px 0; color:var(--muted-2); font-size:var(--fs-xs);
+.ahead .hr .u { font-size:var(--fs-2xs); color:var(--muted); font-weight:500; }
+.dirline { padding:7px 15px 0; color:var(--muted); font-size:var(--fs-xs);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .lims { padding:10px 15px 14px; display:flex; flex-direction:column; gap:9px; }
 .lim { display:grid; grid-template-columns:112px 1fr 96px; gap:10px; align-items:center; font-size:var(--fs-sm); }
 .lim .lab { color:var(--fg); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.lim .lab .mo { color:var(--muted-2); font-size:var(--fs-2xs); letter-spacing:var(--track); }
+.lim .lab .mo { color:var(--muted); font-size:var(--fs-2xs); letter-spacing:var(--track); }
 .track { height:10px; background:var(--bg-2); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
 .fill { height:100%; border-radius:4px; }
 .lim .num { text-align:right; color:var(--muted); font-size:var(--fs-xs); white-space:nowrap; }
 .lim .num b { color:var(--fg); font-weight:600; }
-.resets { grid-column:2 / 4; color:var(--muted-2); font-size:var(--fs-xs); margin-top:-5px; }
+.resets { grid-column:2 / 4; color:var(--muted); font-size:var(--fs-xs); margin-top:-5px; }
 .resets.hot { color:var(--yellow); }
 .reserveline { display:flex; align-items:center; gap:8px; padding:6px 15px 0; font-size:var(--fs-xs); color:var(--muted); }
 .reserveline input { width:52px; font-size:var(--fs-xs); color:var(--fg); background:var(--bg);
   border:1px solid var(--border-2); border-radius:6px; padding:3px 6px; text-align:right; }
 .reserveline input:focus { outline:1px solid var(--accent); }
-.reserveline .pct { color:var(--muted-2); margin-left:-4px; }
-.reserveline .rsub { color:var(--muted-2); }
+.reserveline .pct { color:var(--muted); margin-left:-4px; }
+.reserveline .rsub { color:var(--muted); }
 .err { color:var(--accent-2); background:var(--surface); border:1px solid var(--accent);
   border-radius:10px; padding:16px 18px; margin-top:10px; font-size:var(--fs-md); line-height:1.6; }
-.note { color:var(--muted-2); font-size:var(--fs-xs); margin-top:18px; }
+.note { color:var(--muted); font-size:var(--fs-xs); margin-top:18px; }
 .note a { color:var(--muted); }
 </style>
 </head>
@@ -159,6 +159,26 @@ button:disabled { opacity:.5; cursor:wait; }
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// JS-string layer for a value inside an inline handler: esc() alone leaves &#39;
+// which the parser decodes to ' and breaks out of the onclick quotes. Emits its
+// own quotes — call as setReserve(${escArg(x)}). Mirrors index.html/pair.html.
+const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
+// The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
+// the server's layer is opt-in per request, so a mutation without these headers
+// is a mutation a retry can run twice. Minted PER TAP, never from the payload;
+// `crypto.randomUUID` is secure-context only and this page is served over plain
+// HTTP on the tailnet. index.html carries the long form of this note.
+function idemKey() {
+  if (self.crypto && crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;   // v4, variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+function idemHeaders() {
+  return { "Content-Type": "application/json", "Idempotency-Key": idemKey(),
+           "Idempotency-Issued-At": (Date.now() / 1000).toFixed(3) };
+}
 
 function rel(s) {
   s = Math.max(0, Math.round(s));
@@ -225,7 +245,7 @@ function render(d) {
       <div class="reserveline">
         <span>reserve buffer</span>
         <input type="number" min="0" max="95" step="5" value="${rsv}"
-          onchange="setReserve('${esc(a.fb_label || a.slug)}', this.value)" title="headroom % kept free from auto-dispatch">
+          onchange="setReserve(${escArg(a.fb_label || a.slug)}, this.value)" title="headroom % kept free from auto-dispatch">
         <span class="pct">%</span>
         <span class="rsub">${rsv ? "auto-dispatch stops at " + (100 - rsv) + "% of the weekly limit" : "auto-dispatch may use the full weekly limit"}</span>
       </div>
@@ -240,7 +260,7 @@ function render(d) {
 async function setReserve(label, percent) {
   try {
     const r = await fetch("/api/reserve", { method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: idemHeaders(),
       body: JSON.stringify({ account: label, percent: Number(percent) }) });
     const d = await r.json();
     if (!d.ok) { alert("reserve: " + (d.error || "failed")); return; }

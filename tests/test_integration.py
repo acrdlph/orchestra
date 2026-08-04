@@ -171,6 +171,10 @@ class _Fleet(unittest.TestCase):
         fb.limits.cached_limits = lambda refresh=False: {"available": False}
         fb._cache["state"] = None                              # bust the 4s cache
         self._closeouts = dict(fb._closeouts)
+        # the closeout map is persisted now, and pruning it writes — point the
+        # file into the fixture so no test writes state into the checkout
+        self._closeout_state = fb.finish.CLOSEOUT_STATE
+        fb.finish.CLOSEOUT_STATE = self.tmp / "finish.closeouts.json"
         # The stat memo outlives a collect by design — never across a fixture,
         # or one test's inodes answer for another's. Its counters are
         # process-lifetime health readings (that is the point of `scan_drift`),
@@ -188,6 +192,7 @@ class _Fleet(unittest.TestCase):
             m.hits, m.misses, m.evictions, m.drift = h, mi, e, d
         fb._closeouts.clear()
         fb._closeouts.update(self._closeouts)
+        fb.finish.CLOSEOUT_STATE = self._closeout_state
         for k, v in self._save.items():
             if v is None:
                 fb.CFG.pop(k, None)

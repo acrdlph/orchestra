@@ -552,8 +552,11 @@ class TestAudit(AuthCase):
         self.assertEqual((line["device"], line["label"]), (None, "loopback"))
 
     def test_reads_are_not_recorded(self):
+        # /api/events is NOT here: an SSE open holds a slot and is now audited
+        # on open (see test_a_stream_open_is_recorded). These three are true
+        # reads that return and forget.
         _, token = self.mint()
-        for path in ("/api/state", "/api/events", "/api/chat?sid=x", "/"):
+        for path in ("/api/state", "/api/chat?sid=x", "/"):
             self.check(TAILNET, f"Bearer {token}", "GET", path, now=1.0)
         self.assertEqual(fb.auth.read_audit(), [])
 
@@ -564,6 +567,13 @@ class TestAudit(AuthCase):
         self.check(TAILNET, f"Bearer {token}", "GET", "/api/focus?pid=1",
                       now=1.0)
         self.assertEqual(fb.auth.read_audit()[0]["path"], "/api/focus?pid=1")
+
+    def test_a_stream_open_is_recorded(self):
+        """An SSE open takes a subscriber slot (32 exhaust the ceiling); it is
+        acted-upon, not a read that forgets, so `audited` logs it on open."""
+        _, token = self.mint()
+        self.check(TAILNET, f"Bearer {token}", "GET", "/api/events", now=1.0)
+        self.assertEqual(fb.auth.read_audit()[0]["path"], "/api/events")
 
     def test_a_refusal_leaves_evidence(self):
         self.check(TAILNET, "Bearer orc1_abcdef01_nope", "GET",

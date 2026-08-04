@@ -27,6 +27,13 @@ import Foundation
 /// press the button, not a second way to navigate.
 enum DebugRoute: Equatable {
     case fleet
+    /// The demo fleet's board. `ORC_SCREEN=demo` — and, because a screenshot run
+    /// needs the demo's *other* screens too, `demo:` is also a PREFIX:
+    /// `demo:wt:search-index`, `demo:chat:…`, `demo:limits`, `demo:map` each
+    /// enter the demo and then land exactly where the bare route would.
+    /// `demoRequested` reads the prefix; `parse` strips it, so every route below
+    /// keeps one spelling.
+    case demo
     case limits
     case server
     /// The notification preferences, pushed on the Server stack. `ORC_SCREEN=
@@ -56,9 +63,25 @@ enum DebugRoute: Equatable {
         return parse(raw)
     }
 
+    /// Whether this launch asked for the demo fleet. Read by `AppModel.start()`,
+    /// which enters the demo before anything renders — so a screenshot run lands
+    /// on the demo board with no finger, exactly as `ORC_PAIR_URL` lands a real
+    /// one.
+    static func demoRequested(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let raw = environment["ORC_SCREEN"]?.lowercased() else { return false }
+        return raw == "demo" || raw.hasPrefix("demo:")
+    }
+
     static func parse(_ raw: String) -> DebugRoute? {
+        var raw = raw
+        if raw.lowercased().hasPrefix("demo:") {
+            raw = String(raw.dropFirst("demo:".count))
+        }
         let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
         switch parts.first?.lowercased() {
+        case "demo": return .demo
         case "fleet": return .fleet
         case "limits":
             guard parts.count == 2, !parts[1].isEmpty else { return .limits }
@@ -94,7 +117,7 @@ enum DebugRoute: Equatable {
     /// Which tab the route lives on.
     var tab: Int {
         switch self {
-        case .fleet, .map, .worktree, .chat, .mission, .finish, .resume: 0
+        case .demo, .fleet, .map, .worktree, .chat, .mission, .finish, .resume: 0
         case .limits, .account: 1
         case .server, .notifications: 2
         }
@@ -126,7 +149,7 @@ enum DebugRoute: Equatable {
         case .chat(let w, let a, let s): .chat(worktree: w, account: a, sid: s)
         case .finish(let name): .worktree(name)
         case .resume(let w, _): .worktree(w)
-        case .fleet, .limits, .server, .notifications, .account, .mission: nil
+        case .demo, .fleet, .limits, .server, .notifications, .account, .mission: nil
         }
     }
 }

@@ -55,8 +55,13 @@ public struct ChatView: View {
         self.sid = sid
         self.fleet = store
         self.autoSend = autoSend
+        // The demo's transcript for this session, if this is the demo board. It
+        // is read from the board's own store because that is what this screen is
+        // already given, and it goes into the SAME `ChatStore` a real
+        // conversation uses — same bubbles, same receipts, same auto-follow.
         _chat = State(initialValue: ChatStore(client: client, worktree: worktree,
-                                              account: account, sid: sid))
+                                              account: account, sid: sid,
+                                              demo: store.demo?.chat(sid: sid)))
     }
 
     private var card: Worktree? {
@@ -250,12 +255,16 @@ public struct ChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                         .stroke(Palette.control, lineWidth: 1))
-                    // Return inserts a space, exactly as the far side would.
-                    .onChange(of: draft) { _, new in
-                        if new.contains(where: \.isNewline) {
-                            draft = new.replacingOccurrences(of: "\n", with: " ")
-                        }
-                    }
+                    // **The draft is never rewritten while you type.** It used to
+                    // collapse newlines here, on every change, so that the field
+                    // showed what the far side would receive. That cost more than
+                    // it bought: assigning a `TextField`'s bound String from
+                    // outside moves the caret to the END of the text, so pressing
+                    // Return mid-message threw the cursor to the bottom and a
+                    // line break silently became a jump. The collapse is not lost
+                    // — `ChatStore.send` applies `WireText.collapsed` to whatever
+                    // is typed, which is the only place it has to happen, and the
+                    // footnote below says so before you press send.
                 Button {
                     let text = draft
                     draft = ""
@@ -271,9 +280,16 @@ public struct ChatView: View {
                 .disabled(!sendEnabled)
                 .accessibilityLabel("send this reply")
             }
-            Text("newlines become spaces on the way to the terminal")
+            // **Disabled with the reason attached, never hidden.** A reviewer
+            // has to see that this app replies to agents; a composer removed in
+            // demo mode would be showing them a smaller app than the one they
+            // are reviewing. `ChatStore.send` refuses too — this line is the
+            // courtesy, that is the guarantee.
+            Text(fleet.isDemo
+                 ? DemoCopy.refusal
+                 : "newlines become spaces on the way to the terminal")
                 .font(OrcFont.meta)
-                .foregroundStyle(Palette.textDisabled)
+                .foregroundStyle(fleet.isDemo ? Palette.statusLimit : Palette.textDisabled)
         }
         .padding(.horizontal, Space.lg)
         .padding(.top, Space.sm)
@@ -281,7 +297,8 @@ public struct ChatView: View {
     }
 
     private var sendEnabled: Bool {
-        !chat.sending && !WireText.collapsed(draft).isEmpty && session != nil
+        !fleet.isDemo && !chat.sending
+            && !WireText.collapsed(draft).isEmpty && session != nil
     }
 
     private func refusal(_ message: String) -> some View {

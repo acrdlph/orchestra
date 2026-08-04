@@ -22,6 +22,12 @@ struct OrchestraApp: App {
                 .preferredColorScheme(.dark)
                 .accessibilityIgnoresInvertColors(true)
                 .task {
+                    // Resolve the bundled faces before the first label draws.
+                    // `plexIsAvailable` is lazy, so touching it here is what
+                    // turns a missing .ttf into a DEBUG trap at launch instead
+                    // of a Release build that quietly draws in SF Mono. See
+                    // `UI/Typography.swift` and `UX.md` §9.4.
+                    _ = OrcFont.plexIsAvailable
                     // Wire the delegate to the model's controller before start:
                     // a token buffered by the delegate replays the instant this
                     // runs, and start() may itself register for one.
@@ -90,8 +96,43 @@ final class AppModel {
             ensurePushStarted()
         }
         #if DEBUG
+        // The demo seam, and it is the same kind as `ORC_PAIR_URL`: a simulator
+        // cannot be tapped, and the screenshot job's whole subject is a screen
+        // that today needs a finger to reach. It enters through exactly the same
+        // `enterDemo()` the pairing screen's button calls.
+        if !pairing.isPaired, DebugRoute.demoRequested() { enterDemo() }
         await runPushDebugSeams()
         #endif
+    }
+
+    // MARK: - The demo fleet
+
+    /// Whether a canned board is on screen. Asked by `RootView` (which branch to
+    /// render, and whether the biometric gate applies) and by every screen that
+    /// can act.
+    var isDemo: Bool { fleet.isDemo }
+
+    /// Put the demo fleet up. **Only ever from an unpaired app** — a paired
+    /// device has a real board and a real gate, and both must stay that way.
+    ///
+    /// One payload, one clock, four stores. Nothing is fetched and nothing is
+    /// written; `FleetStore.loadDemo` stops the stream and the pump first, so
+    /// there is no socket and no `/api/state` poll behind any of this.
+    func enterDemo() {
+        guard !pairing.isPaired, !isDemo, let payload = DemoPayload.loadOrNil() else { return }
+        fleet.loadDemo(payload)
+        limits.loadDemo(payload.limits)
+        topology.loadDemo(payload.topology)
+        actions.enterDemo()
+    }
+
+    /// Back to pairing, with nothing left behind.
+    func endDemo() {
+        guard isDemo else { return }
+        fleet.exitDemo()
+        limits.exitDemo()
+        topology.exitDemo()
+        actions.exitDemo()
     }
 
     /// Arm push exactly once: become the notification delegate, register the

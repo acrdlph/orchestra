@@ -17,19 +17,26 @@ unattended for a year*.
 
 ---
 
+> **2026-08-04 — App Store push.** A night of hardening moved most of this list to done; each
+> item below is marked. The app now archives, App-Store-signs and exports a validated `.ipa`
+> (`ios/release.sh`), builds on an icon and asset catalog, and shows a self-contained demo fleet
+> so App Review needs no Mac. What remains before Upload is two things only a person can do: the
+> App Store Connect **Issuer ID** (the `.p8` key is already on the Mac) and creating the app
+> record. See `docs/mobile/APPSTORE.md`.
+
 ## Tier 1 — Security & safety (do first; small, high-stakes)
 
 The server types into terminals running `--dangerously-skip-permissions` and dispatches agents
 that spend money. That raises the bar for everything that can reach it.
 
-1. **Biometric gate on the app itself (Face ID / passcode).** *Not built.* Today anyone holding
-   your **unlocked** phone can open Orchestra and drive the fleet. Add `LocalAuthentication`:
-   require Face ID to reveal the board (or at minimum before any *mutation* — dispatch, send,
-   finish). Small: one `LAContext` wrapper + a gate in `RootView` / before the act paths. This is
-   the single most important missing piece and it is the one you asked about.
-2. **A real security review of the exposed surface.** The `/security-review` treatment on the
-   auth path, the request guard, and the actuation layer, before this is trusted long-term.
-   `METHOD.md` §7 already names which direction is dangerous.
+1. **Biometric gate on the app itself (Face ID / passcode).** **Built** (`App/BiometricGate.swift`,
+   gating `RootView`, re-locks on `scenePhase`). One open policy call, flagged in
+   `HANDOFF-tier1-security.md`: it fails **open** on a phone with no passcode set — deliberate, but
+   the user should confirm they want that.
+2. **A real security review of the exposed surface.** **Done** — a read-only adversarial review of
+   the auth guard, the actuation layer (the tonight-modified osascript/tmux send and the
+   `clean_scratch` deletion path), the disk-prune guards, and pairing/identity ran over the merged
+   tree. Findings folded back the same night.
 3. **Token scopes (`read` / `act` / `admin`).** *Not built — deliberately deferred* (`auth.py`
    reserves the design; a half-built scope ladder is worse than an honest absence). Today one
    token = full fleet control. A read-only device, or a fresh-biometric requirement for admin
@@ -37,33 +44,58 @@ that spend money. That raises the bar for everything that can reach it.
 
 ## Tier 2 — Distribution & stability
 
-4. **TestFlight**, or the **remote OTA install** feature (handoff in
-   `HANDOFF-remote-ota-install.md`). The current device build is development-signed and needs the
-   Mac; neither is a sustainable way to keep the app on your phone. TestFlight is the normal
-   answer; OTA is the "install while traveling" one.
-5. **App icon + asset catalog.** *Not built* — no `.xcassets`. Required for TestFlight/App Store,
-   and the way brand colours reach out-of-process surfaces (widgets, notification content).
-6. **iOS CI.** The python suite runs in CI; the app does not. Add `xcodebuild build` + `swift
-   test` on push, so a Swift regression is caught like a python one.
-7. **Bundle IBM Plex Mono.** The app uses the system SF Mono, not the brand face — cosmetic, but
-   it is the difference between "looks like orchestra" and "looks close".
+4. **TestFlight.** **Ready to press.** `ios/release.sh` archives, App-Store-signs (Apple
+   Distribution, store profile minted from Xcode's team session) and exports a validated `.ipa`
+   with `aps-environment=production` — proven end to end tonight short of the upload itself. Upload
+   needs the ASC Issuer ID and an app record (browser, one-time). The OTA-install path
+   (`HANDOFF-remote-ota-install.md`) stays the "install while travelling" alternative.
+5. **App icon + asset catalog.** **Built** — `App/Assets.xcassets` with the light/dark/tinted
+   `AppIcon`, `AccentColor`, and a `LaunchBackground` the launch screen uses; rendered
+   reproducibly by `ios/icon/render_icon.swift`. Looked at on the home screen.
+6. **iOS CI.** **Built** — `.github/workflows/ios.yml` runs `swift test` + a simulator
+   `xcodebuild` on macos-26, warnings-as-errors honoured, its own concurrency group.
+7. **Bundle IBM Plex Mono.** **Done.** Four faces (Regular / Medium / SemiBold / Bold, ~680 KB)
+   ship in `ios/App/Fonts/` with `OFL.txt`; `UI/Typography.swift` resolves them from
+   `\.legibilityWeight`, so Bold Text moves the machine voice a weight instead of leaving it thin.
+   No call site changed. `Font.custom` substitutes silently for a face that will not resolve, so
+   the app checks all four with `UIFont(name:)` at launch — `assertionFailure` in DEBUG, and in
+   Release the whole ramp (never a single glyph) falls back to the system monospaced design.
+   Two marks moved because Plex has no glyph for them: `Δ` U+0394 → `∆` U+2206, `✕` U+2715 → the
+   `xmark` SF Symbol. Verified by looking at the pairing screen, the live board and the server
+   screen on an iPhone 17 Pro Max simulator, plus `FontBundleTests` on every `swift test`.
 
 ## Tier 3 — The phone superpowers (specced in UX.md, not built)
 
 8. **Home Screen / Lock Screen widget** — "who needs me" at a glance without opening the app.
 9. **Live Activity** — a running mission on the lock screen, updating live.
-10. **Notification polish** — inline reply is wired; still wanted: snooze, quiet-hours UI,
-    per-event-type preferences, thread-id grouping.
+10. **Notification polish** — snooze, quiet-hours UI, per-event-type preferences and thread-id
+    grouping **shipped** (`Model/PushSettings.swift`, `/api/v1/push/mute`); a post-wake
+    suppression now stops a lid-open buzzing the phone with the night's backlog
+    (`notify.py`). Left: a server route to *read back* stored preferences, and the notification
+    service extension (cosmetic now that the server stamps the reply category).
 
 ## Tier 4 — Backend loose ends (from the README open-items table)
 
 11. **`resumes` don't ride the stream.** They live in `resume.py`, which the observer doesn't
     watch, so a stream-only client (the phone) learns about auto-resume changes via a side poll,
-    not the delta stream. Fine today; name it before it surprises someone.
-12. **Transcript-corpus retention.** Orchestra's own inputs grow ~1,000 files/day (~5 GB now).
-    There's a backup job; there is no pruning. A disk on a laptop is finite.
-13. **The four UX back-ports (UX.md Appendix E)** so the app and the desktop board agree
-    pixel-for-pixel on colours and glyphs.
+    not the delta stream. Fine today; name it before it surprises someone. *(The serial-fire
+    hazard beside it — one slow tmux resume delaying every other due schedule — is closed:
+    `resume_loop` now fires each due key on its own thread, exactly-once preserved by a claim set.)*
+12. **Transcript-corpus retention.** ~~There's a backup job; there is no pruning.~~ **Half done,
+    and the other half is not orchestra's to do.** *Corrected:* there is no backup job and no
+    derived copy — `transcripts.py` is read-only end to end, so the ~1,000 files/day (4.9 GB
+    across 7 homes here, oldest 193 days) are the **user's own** `~/.claude*/projects`. A
+    program that watches your transcripts must not delete them, so what shipped is the report:
+    `disk.py` says what the corpus costs at startup and every `disk_report_h`, and warns past
+    `disk_warn_gb` / under `disk_free_gb` free — which is the number that predicts the incident
+    (a full disk stops an agent writing its `.jsonl`; see `stale_alive_s`). Deleting from it
+    stays a decision the user makes at their own shell. **Built:** rotation for the two logs
+    orchestra *does* own (`audit.log.jsonl`, `dispatch.log.jsonl`), with a hard 7-day floor
+    under any segment and an audit line per batch. **Left:** nothing, unless the user wants an
+    opt-in corpus policy — which needs their explicit sign-off before any `rm`.
+13. **The four UX back-ports (UX.md Appendix E).** **Done** — `--accent-2` → `#EDB9AC`, every
+    tint fill to α 0.12, data off `--muted-2` onto `--muted`, and the ended row on a darker ground
+    instead of `opacity: .55`, across all five web pages.
 
 ---
 

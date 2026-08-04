@@ -14,7 +14,7 @@
   --bg:#0d0d0d; --bg-2:#111111; --surface:#161616; --surface-2:#1c1c1c;
   --border:#2a2a2a; --border-2:#3a3a3a;
   --fg:#e8e6e3; --muted:#8a8784; --muted-2:#6a6764;
-  --accent:#d97757; --accent-2:#e8a87c; --green:#87b386; --cyan:#7fb3c8;
+  --accent:#d97757; --accent-2:#edb9ac; --green:#87b386; --cyan:#7fb3c8;
   --yellow:#d4b06a; --red:#c9756a;
   --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-md:13px; --fs-lg:14px;
@@ -94,7 +94,7 @@ button.danger:hover { background:var(--red); color:var(--bg); }
 
 /* ---- devices ---- */
 table { width:100%; border-collapse:collapse; font-size:var(--fs-sm); }
-th { text-align:left; color:var(--muted-2); font-weight:500; font-size:var(--fs-2xs);
+th { text-align:left; color:var(--muted); font-weight:500; font-size:var(--fs-2xs);
   text-transform:uppercase; letter-spacing:var(--track); padding:0 10px 8px 0; }
 td { padding:10px 10px 10px 0; border-top:1px solid var(--border); vertical-align:middle; }
 td.id { color:var(--cyan); }
@@ -258,6 +258,14 @@ async function poll() {
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+// A value dropped into a JS string inside an inline handler needs the JS-string
+// layer too: esc() alone turns ' into &#39;, which the HTML parser decodes back
+// to ' before the onclick body is compiled — so an apostrophe (or the &#39; a
+// crafted device LABEL carries) breaks out of the quotes. JSON.stringify does
+// the JS escaping and supplies the quotes; esc() then makes it attribute-safe.
+// Call it WITHOUT wrapping quotes: revoke(${escArg(id)}). Mirrors index.html.
+const escArg = s => esc(JSON.stringify(String(s == null ? "" : s)));
+
 const ago = t => {
   if (!t) return "never";
   const s = Math.max(0, Date.now() / 1000 - t);
@@ -284,8 +292,8 @@ function render(devices) {
       "<td>" + ago(d.last_seen) + "</td>" +
       "<td>" + ago(d.created) + "</td>" +
       "<td>" + (revoked ? "" :
-        '<button class="danger" onclick="revoke(\'' + esc(d.id) + "','" +
-        esc(d.label).replace(/'/g, "\\'") + '\')">revoke</button>') + "</td>" +
+        '<button class="danger" onclick="revoke(' + escArg(d.id) + "," +
+        escArg(d.label) + ')">revoke</button>') + "</td>" +
       "</tr>";
   }).join("");
   $("devices").innerHTML =

@@ -179,6 +179,25 @@ def grouped(code):
     return f"{code[:4]}-{code[4:]}" if len(code) == 8 else code
 
 
+def advertised(host):
+    """What the phone should DIAL, given what the server bound.
+
+    A tailnet IP is upgraded to the MagicDNS name when the tailnet resolves
+    one: the App Store build of the iOS client carries an ATS exception for
+    `ts.net` and cannot carry one for a raw `100.64/10` literal (see
+    `tailnet.dns_name`), so the IP is the one address a store-signed phone
+    cannot load. Loopback and anything else pass through untouched — a
+    rehearsal window on `127.0.0.1` should keep looking like one, and a host
+    someone configured by hand is theirs to be right about.
+
+    Everything the phone is handed goes through here — the QR, the manual
+    fields, and `_server_facts` on the claim — so the three cannot disagree.
+    """
+    if tailnet.in_range(host):
+        return tailnet.dns_name() or host
+    return host
+
+
 def open_window(host=None, port=None, now=None):
     """Mint a pairing code and open the window. Returns the page/API payload.
 
@@ -193,7 +212,7 @@ def open_window(host=None, port=None, now=None):
     """
     global _window
     now = time.time() if now is None else now
-    host = host or config.CFG.get("host") or "127.0.0.1"
+    host = advertised(host or config.CFG.get("host") or "127.0.0.1")
     port = config.CFG.get("port", 4242) if port is None else port
     code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
     with _lock:
@@ -304,8 +323,8 @@ def claim(peer, body, now=None):
         return None, (400, BAD_REQUEST, "the body of a pairing request must be "
                                         "a JSON object")
     presented = normalise(body.get("code"))
-    label = str(body.get("label") or "")[:LABEL_MAX].strip()
-    platform = str(body.get("platform") or "")[:PLATFORM_MAX].strip()
+    label = _clean_label(str(body.get("label") or "")[:LABEL_MAX].strip())
+    platform = _clean_label(str(body.get("platform") or "")[:PLATFORM_MAX].strip())
 
     with _lock:
         w = _window
@@ -371,6 +390,26 @@ def claim(peer, body, now=None):
     }, None
 
 
+# The label is the ONE piece of attacker-chosen text that survives into
+# `devices.json` and is rendered by the board's `/pair` page. The page's own
+# `escArg`/`esc` is the primary defence and correctly handles quotes,
+# apostrophes and `&` — so those STAY, because they appear in real device names
+# ("Achill's iPhone", "AT&T iPhone") and the identity rule is that the label you
+# sent is the label you revoke. What is stripped here, as defence in depth
+# against a future sink that forgets to escape, is the subset that can only ever
+# be structure and never a name: the tag-forming `< >`, the JS-string
+# metacharacters backslash and backtick, and every control character (a newline
+# that forges a `--list-devices` row, an ESC that a terminal would act on).
+_LABEL_BAN = str.maketrans({c: None for c in "<>\\`"})
+
+
+def _clean_label(text):
+    """Drop the structural characters a device label never legitimately carries,
+    and any control character. Quotes and `&` are left to the render layer."""
+    text = text.translate(_LABEL_BAN)
+    return "".join(ch for ch in text if ch >= " " and ch != "\x7f").strip()
+
+
 def _default_label(platform, peer):
     """A device with no label is still a device that has to be revocable.
 
@@ -384,12 +423,18 @@ def _default_label(platform, peer):
 def _server_facts():
     """What the client needs to talk to this server afterwards.
 
+    `host` is what the phone should dial (see `advertised` — the MagicDNS name
+    when the tailnet has one); `addr` is what the server actually bound, kept
+    for diagnostics because "the name stopped resolving" and "the server moved"
+    look identical from a phone that only ever knew the name.
+
     No `spki`, no `cert_not_after`: API.md §3.3 lists both, and both belong to
     the TLS design that ADR 0013 replaced. Sending them as nulls would invite a
     client to implement pinning against nothing.
     """
     return {
-        "host": config.CFG.get("host", "127.0.0.1"),
+        "host": advertised(config.CFG.get("host") or "127.0.0.1"),
+        "addr": config.CFG.get("host", "127.0.0.1"),
         "port": config.CFG.get("port", 4242),
         "hostname": socket.gethostname(),
         "api": "1",

@@ -51,8 +51,14 @@ class PairCase(unittest.TestCase):
         fb.auth._reset_buckets()
         fb.pairing._reset()
         self._cfg = dict(fb.CFG)
+        # Hermetic: `advertised` asks the real Tailscale for a MagicDNS name,
+        # and this suite must not depend on (or wait for) the machine's daemon.
+        # Tests about the upgrade itself install their own fake.
+        self._dns = fb.tailnet.dns_name
+        fb.tailnet.dns_name = lambda: None
 
     def tearDown(self):
+        fb.tailnet.dns_name = self._dns
         fb.auth.REGISTRY, fb.auth.AUDIT_LOG = self._saved
         fb.auth._forget_registry()
         fb.auth._reset_buckets()
@@ -1149,6 +1155,111 @@ class TestFindingTheTailnet(unittest.TestCase):
             self.assertIn("could not be bound", fb.tailnet.why_not())
         finally:
             fb.tailnet.from_cli, fb.tailnet.from_interfaces = saved
+
+
+class TestTheLabelFilter(PairCase):
+    """The device label is the one attacker-chosen string that reaches
+    devices.json and the /pair page. escArg on the page is the primary defence
+    (proven in tests/test_fixes_web.py); this boundary filter is defence in
+    depth against a future unescaped sink, stripping only structure a name never
+    carries — `< > \\ \\`` and control characters — and keeping quotes/`&`, which
+    real names contain and the render layer already handles (C1)."""
+
+    def test_tag_forming_characters_are_stripped(self):
+        _, code = self.open()
+        ok, err = self.claim(code, label="<img src=x onerror=alert(1)>")
+        self.assertIsNone(err)
+        self.assertNotIn("<", ok["label"])
+        self.assertNotIn(">", ok["label"])
+        # the readable core survives — a filter, not a rejection
+        self.assertIn("img", ok["label"])
+
+    def test_js_string_metacharacters_are_stripped(self):
+        _, code = self.open()
+        ok, _ = self.claim(code, label="a\\b`c`d")
+        self.assertNotIn("\\", ok["label"])
+        self.assertNotIn("`", ok["label"])
+
+    def test_control_characters_are_dropped(self):
+        _, code = self.open()
+        ok, _ = self.claim(code, label="tab\there\nnewline\x1b[2J")
+        self.assertNotIn("\n", ok["label"])
+        self.assertNotIn("\t", ok["label"])
+        self.assertNotIn("\x1b", ok["label"])
+
+    def test_a_real_name_with_an_apostrophe_and_ampersand_round_trips(self):
+        # the identity rule: the label you sent is the label you revoke. Quotes
+        # and & are the render layer's job, not this filter's.
+        _, code = self.open()
+        ok, _ = self.claim(code, label="Achill's AT&T iPhone")
+        self.assertEqual(ok["label"], "Achill's AT&T iPhone")
+
+
+class TestTheAdvertisedHost(PairCase):
+    """A tailnet IP is upgraded to the MagicDNS name everywhere the phone
+    looks — QR, manual fields, and the claim's server facts — because the App
+    Store build's ATS exception covers `ts.net` and cannot cover a raw
+    `100.64/10` literal."""
+
+    NAME = "achills-macbook-pro.tail1205d9.ts.net"
+
+    def test_a_tailnet_ip_becomes_the_magicdns_name_in_the_qr(self):
+        fb.tailnet.dns_name = lambda: self.NAME
+        w, _ = self.open(host="100.113.110.31")
+        self.assertIn(self.NAME, w["url"])
+        self.assertNotIn("100.113.110.31", w["url"])
+        self.assertEqual(w["manual"]["host"], self.NAME)
+
+    def test_no_magicdns_keeps_the_ip(self):
+        w, _ = self.open(host="100.113.110.31")   # PairCase fakes None
+        self.assertIn("100.113.110.31", w["url"])
+
+    def test_loopback_is_never_upgraded(self):
+        """A rehearsal window on 127.0.0.1 keeps looking like one."""
+        fb.tailnet.dns_name = lambda: self.NAME
+        w, _ = self.open(host="127.0.0.1")
+        self.assertIn("127.0.0.1", w["url"])
+
+    def test_the_claim_advertises_the_name_and_keeps_the_bound_addr(self):
+        fb.tailnet.dns_name = lambda: self.NAME
+        fb.CFG["host"] = "100.113.110.31"
+        _, code = self.open(host="100.113.110.31")
+        ok, err = self.claim(code)
+        self.assertIsNone(err)
+        self.assertEqual(ok["server"]["host"], self.NAME)
+        self.assertEqual(ok["server"]["addr"], "100.113.110.31")
+
+    def test_dns_name_requires_magicdns_and_strips_the_root_dot(self):
+        real = self._dns          # setUp faked the module attr; drive the real one
+        saved = fb.tailnet._run
+        try:
+            fb.tailnet._run = lambda cmd: (
+                '{"CurrentTailnet": {"MagicDNSEnabled": true},'
+                ' "Self": {"DNSName": "mac.tailabc.ts.net."}}')
+            self.assertEqual(real(), "mac.tailabc.ts.net")
+
+            fb.tailnet._run = lambda cmd: (
+                '{"CurrentTailnet": {"MagicDNSEnabled": false},'
+                ' "Self": {"DNSName": "mac.tailabc.ts.net."}}')
+            self.assertIsNone(real())
+
+            fb.tailnet._run = lambda cmd: "not json"
+            self.assertIsNone(real())
+
+            fb.tailnet._run = lambda cmd: ""
+            self.assertIsNone(real())
+
+            # L2: a name that is not shaped like `<…>.ts.net` is not advertised,
+            # even if the daemon reports it — it is going into a QR the phone
+            # scans, and the store build's ATS only covers ts.net.
+            for bad in ("evil.com", "mac.example.org", "attacker.ts.net.evil.com",
+                        "ts.net.evil.com", "http://mac.ts.net"):
+                fb.tailnet._run = (lambda b: lambda cmd:
+                    '{"CurrentTailnet": {"MagicDNSEnabled": true},'
+                    ' "Self": {"DNSName": "%s"}}' % b)(bad)
+                self.assertIsNone(real(), f"{bad!r} must not be advertised")
+        finally:
+            fb.tailnet._run = saved
 
 
 if __name__ == "__main__":

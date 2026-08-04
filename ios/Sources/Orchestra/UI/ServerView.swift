@@ -16,7 +16,9 @@ public struct ServerView: View {
     @Bindable private var fleet: FleetStore
     @Bindable private var push: PushStore
     private let profile: ServerProfile?
-    private let onUnpair: () -> Void
+    /// Unpair a real device, or leave the demo — the same closure the board's
+    /// menu gets, so there is one way out and it is on both screens.
+    private let onLeave: () -> Void
     /// Push the notifications screen on appear. The same `#if DEBUG` seam as the
     /// Fleet tab's `initialRoute`: a simulator cannot tap the row, and a screen
     /// that is only ever reached by a finger is a screen the phase gate cannot
@@ -29,12 +31,12 @@ public struct ServerView: View {
 
     public init(fleet: FleetStore, profile: ServerProfile?, push: PushStore,
                 initialShowSettings: Bool = false,
-                onUnpair: @escaping () -> Void) {
+                onLeave: @escaping () -> Void) {
         self.fleet = fleet
         self.push = push
         self.profile = profile
         self.initialShowSettings = initialShowSettings
-        self.onUnpair = onUnpair
+        self.onLeave = onLeave
     }
 
     public var body: some View {
@@ -43,16 +45,24 @@ public struct ServerView: View {
                 Palette.canvas.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Space.lg) {
+                        if fleet.isDemo { ServerSays(DemoCopy.banner, tone: .unknown) }
                         machine
                         notifications
                         stream
                         freshness
-                        Button("Unpair this device", role: .destructive, action: onUnpair)
+                        about
+                        // In the demo this is the pairing door, and it is
+                        // deliberately the one place a reviewer looking for
+                        // "how do I connect a real Mac" would look.
+                        Button(fleet.isDemo ? DemoCopy.pairInstead : "Unpair this device",
+                               role: fleet.isDemo ? nil : .destructive,
+                               action: onLeave)
                             .font(OrcFont.button)
-                            .foregroundStyle(Palette.statusNeeds)
+                            .foregroundStyle(fleet.isDemo ? Palette.statusFree : Palette.statusNeeds)
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                                .stroke(Palette.statusNeeds.opacity(0.5), lineWidth: 1))
+                                .stroke((fleet.isDemo ? Palette.statusFree : Palette.statusNeeds)
+                                    .opacity(0.5), lineWidth: 1))
                         Color.clear.frame(height: Space.xxl)
                     }
                     .padding(.horizontal, Space.lg)
@@ -64,7 +74,8 @@ public struct ServerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: ServerRoute.self) { route in
                 switch route {
-                case .notifications: NotificationSettingsView(push: push)
+                case .notifications: NotificationSettingsView(push: push,
+                                                             isDemo: fleet.isDemo)
                 }
             }
         }
@@ -152,10 +163,17 @@ public struct ServerView: View {
 
     private var machine: some View {
         Block("MACHINE") {
-            Row("host", profile.map { "\($0.host):\($0.port)" } ?? "—")
+            // The demo has no host and no device id, and says so rather than
+            // printing an em-dash that reads like a failed lookup. `name` and
+            // `user` come off the canned board and are invented, like the rest
+            // of it.
+            Row("host", fleet.isDemo ? DemoCopy.notConnected
+                                     : (profile.map { "\($0.host):\($0.port)" } ?? "—"),
+                hue: fleet.isDemo ? Palette.statusFree : nil)
             Row("name", fleet.state?.hostname ?? profile?.hostname ?? "—")
             Row("user", fleet.state?.user ?? "—")
-            Row("device", profile?.deviceID ?? "—")
+            Row("device", fleet.isDemo ? "none — nothing is paired"
+                                       : (profile?.deviceID ?? "—"))
             // ADR 0013: plain HTTP over the tailnet, deliberately. WireGuard
             // already gives mutual authentication and confidentiality between
             // devices; TLS on top would secure a channel that is already secure,
@@ -166,8 +184,10 @@ public struct ServerView: View {
 
     private var stream: some View {
         Block("STREAM") {
-            Row("state", fleet.link.caption, hue: fleet.link.isLive ? Palette.statusWorking
-                                                                    : Palette.statusLimit)
+            Row("state", fleet.link.caption,
+                hue: fleet.link.isLive ? Palette.statusWorking
+                   : fleet.link.isDemo ? Palette.statusFree
+                   : Palette.statusLimit)
             Row("version", fleet.version.map { "v\($0)" } ?? "—")
             Row("frames applied", "\(fleet.framesApplied)")
             Row("resyncs", "\(fleet.resyncs)",
@@ -217,6 +237,34 @@ public struct ServerView: View {
                 hue: age > 120 ? Palette.statusLimit : nil)
         } else {
             Row(name, "—")
+        }
+    }
+
+    /// The source and the privacy policy, reachable from inside the app — App
+    /// Review guideline 5.1.1 wants the policy one tap away, not only in the
+    /// store listing. Both are the open-source repo; the policy is honest
+    /// because there is nothing to collect (PRIVACY.md).
+    private var about: some View {
+        Block("ABOUT") {
+            linkRow("privacy policy",
+                    "https://github.com/acrdlph/orchestra/blob/main/PRIVACY.md")
+            linkRow("source", "https://github.com/acrdlph/orchestra")
+        }
+    }
+
+    private func linkRow(_ title: String, _ urlString: String) -> some View {
+        Link(destination: URL(string: urlString)!) {
+            HStack(spacing: Space.sm) {
+                Text(title)
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.statusFree)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(.rect)
         }
     }
 }

@@ -68,7 +68,7 @@ public enum Palette {
     public static let statusWorking = token(dark: 0x87B386, light: 0x536E53, darkHC: 0xA3CDA2)
     /// FREE · identifiers: `[account]`, branch, tty, paths. 7.91 on `surface`
     public static let statusFree = token(dark: 0x7FB3C8, light: 0x4D6C79, darkHC: 0x9CCFE4)
-    /// LIMIT HIT · WAITING · dirty Δ · caution. 8.80 on `surface`
+    /// LIMIT HIT · WAITING · dirty ∆ · caution. 8.80 on `surface`
     public static let statusLimit = token(dark: 0xD4B06A, light: 0x79653D, darkHC: 0xE6C684)
 
     // MARK: Tint fills
