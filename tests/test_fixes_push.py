@@ -395,5 +395,41 @@ class TestEventLogPerms(unittest.TestCase):
             __import__("shutil").rmtree(tmp, ignore_errors=True)
 
 
+class TestCurlConfigStripsCRLF(unittest.TestCase):
+    """L7: a `\\n` in a value written into the curl --config becomes a second
+    directive — `output = <path>` a file write, `data-binary = @<path>` a read.
+    Every interpolated value is CR/LF-stripped, so an injected fragment stays on
+    its own value's line instead of starting a new directive."""
+
+    def test_a_newline_in_a_value_does_not_add_a_directive(self):
+        seen = {}
+
+        def fake_run(cmd, timeout=None):
+            # cmd is ["curl", "--config", cfgp] — read back exactly what `post`
+            # wrote, without shelling out to a real curl.
+            seen["cfg"] = Path(cmd[2]).read_text()
+            return 0, "200 2"
+
+        saved = push.shell.run
+        push.shell.run = fake_run
+        try:
+            creds = push.Credentials(topic="sh.orchestra.app",
+                                     environment="production")
+            # a newline in the device token would split the `url = …` line and
+            # leave `output = …"` as its own directive; one in the collapse id
+            # would leave a `data-binary = @…"` directive.
+            push.post("dead\noutput = /tmp/pwned", {"a": 1}, creds, "jwt.tok",
+                      collapse_id="grp\ndata-binary = @/etc/passwd")
+        finally:
+            push.shell.run = saved
+
+        lines = seen["cfg"].splitlines()
+        # exactly the two directives `post` writes on purpose — the injected
+        # fragments never became their own line.
+        self.assertEqual(sum(1 for l in lines if l.startswith("output = ")), 1)
+        self.assertEqual(
+            sum(1 for l in lines if l.startswith("data-binary = ")), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
