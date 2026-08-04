@@ -360,6 +360,122 @@ struct TranscriptRuleTests {
         #expect(Set(merged.map(\.id)).count == merged.count)
     }
 
+    // MARK: - The trigger that asks for an older page
+
+    /// One screen's worth of travel, and the hysteresis that makes "consumed"
+    /// mean something.
+    @Test func theFetchDistanceIsShorterThanTheDistanceThatArmsIt() {
+        #expect(TranscriptRules.rearmMargin > TranscriptRules.prefetchMargin)
+        #expect(TranscriptRules.arrivalMargin < TranscriptRules.prefetchMargin)
+    }
+
+    /// **It fires before the reader runs out of window**, and it fires once.
+    @Test func theTriggerFiresEarlyAndDisarmsItself() {
+        // Still a comfortable distance from the top: nothing is asked for.
+        let quiet = TranscriptRules.topReach(offsetFromTop: 1_400, armed: true,
+                                             hasMoreBefore: true, loading: false)
+        #expect(quiet == TranscriptRules.TopReach(armed: true, load: false))
+
+        // Inside the margin: one page, and the trigger goes down with it.
+        let fired = TranscriptRules.topReach(offsetFromTop: 700, armed: true,
+                                             hasMoreBefore: true, loading: false)
+        #expect(fired == TranscriptRules.TopReach(armed: false, load: true))
+    }
+
+    /// **The defect, as a number.**
+    ///
+    /// This is the fight the user hit on a real phone: the load fires near the
+    /// top, the restore holds the reader's line still — which leaves them a
+    /// page's worth clear of the NEW top — and the old trigger, being an
+    /// `.onAppear` on the row above them, fired again there. Every step: fetch,
+    /// restore to the same boundary, fetch. Here the trigger is disarmed at that
+    /// distance and stays disarmed until the reader has actually travelled.
+    @Test func theTriggerDoesNotFireOnTheRestoreItCaused() {
+        // 3,900 pt of page landed above a reader who was 700 pt from the top.
+        var reach = TranscriptRules.topReach(offsetFromTop: 4_600, armed: false,
+                                             hasMoreBefore: true, loading: false)
+        #expect(reach.load == false)
+        #expect(reach.armed)                  // clear of the top: armed again
+
+        // …and armed is not the same as firing. It fires only once the reader
+        // has read their way back down to the margin.
+        reach = TranscriptRules.topReach(offsetFromTop: 4_600, armed: true,
+                                         hasMoreBefore: true, loading: false)
+        #expect(reach.load == false)
+
+        // Half a page consumed, still nothing.
+        #expect(!TranscriptRules.topReach(offsetFromTop: 2_100, armed: false,
+                                          hasMoreBefore: true, loading: false).armed)
+    }
+
+    /// A page can be eight entries of folded tool traffic — less than a screen —
+    /// and then "travel `rearmMargin` clear of the top" is a thing the reader
+    /// cannot do. **Reaching the top of the window is the other proof**, and it
+    /// is the one the old screen was refusing to answer.
+    @Test func reachingTheTopOfAShortPageAlsoAsksForMore() {
+        let reach = TranscriptRules.topReach(offsetFromTop: 0, armed: false,
+                                             hasMoreBefore: true, loading: false)
+        #expect(reach == TranscriptRules.TopReach(armed: false, load: true))
+        // A scroll view at rest at its top edge does not always report zero.
+        #expect(TranscriptRules.topReach(offsetFromTop: -30, armed: false,
+                                         hasMoreBefore: true, loading: false).load)
+    }
+
+    /// Byte 0 is on screen: there is nothing to ask for and the trigger's own
+    /// state is left exactly as it was found.
+    @Test func nothingIsAskedForOnceTheStartOfTheTranscriptIsHeld() {
+        for armed in [true, false] {
+            let reach = TranscriptRules.topReach(offsetFromTop: 0, armed: armed,
+                                                 hasMoreBefore: false, loading: false)
+            #expect(reach == TranscriptRules.TopReach(armed: armed, load: false))
+        }
+    }
+
+    /// A fetch already in flight is never doubled — and the trigger does not
+    /// spend its arming on the attempt.
+    @Test func aPageAlreadyInFlightIsNeverAskedForTwice() {
+        let reach = TranscriptRules.topReach(offsetFromTop: 100, armed: true,
+                                             hasMoreBefore: true, loading: true)
+        #expect(reach == TranscriptRules.TopReach(armed: true, load: false))
+    }
+
+    /// **The whole climb, as arithmetic.**
+    ///
+    /// A reader walks up a window one viewport at a time; every load drops a
+    /// page's worth of height above them and the restore holds their line still,
+    /// so their distance from the top grows by exactly that page. The property
+    /// that separates the fixed screen from the broken one is not "it loads" —
+    /// the broken one loaded too — it is that **every load is paid for with
+    /// travel**, and that the walk keeps making progress rather than settling
+    /// onto one boundary. Both are asserted; the second one is what a simulator
+    /// measured (28 steps pinned to the same row) before this rule existed.
+    @Test func aClimbPaysForEveryPageWithTravel() {
+        let viewport = 725.0
+        let page = 3_900.0
+        var offset = 12_000.0            // the reader opens at the newest entry
+        var armed = true
+        var loads = 0
+        var lastLoadAt: Double?
+        var travelBetweenLoads: [Double] = []
+
+        for _ in 0..<60 {
+            offset = max(0, offset - viewport)          // one flick upwards
+            let reach = TranscriptRules.topReach(offsetFromTop: offset, armed: armed,
+                                                 hasMoreBefore: true, loading: false)
+            armed = reach.armed
+            guard reach.load else { continue }
+            loads += 1
+            if let last = lastLoadAt { travelBetweenLoads.append(last - offset + page) }
+            lastLoadAt = offset
+            offset += page                              // the page, held in place
+        }
+
+        // It reaches back through page after page rather than stalling.
+        #expect(loads >= 8)
+        // And never twice without the reader reading a page's worth in between.
+        #expect(travelBetweenLoads.allSatisfy { $0 >= TranscriptRules.rearmMargin })
+    }
+
     /// **`ChatStore`'s two numbers, not a third pair.**
     @Test func theCadenceIsTheChatScreensOwn() {
         let now = Date()
@@ -533,6 +649,22 @@ struct TranscriptStoreTests {
         #expect(page.messages.count <= 30)
         #expect(page.hasMoreBefore)
         #expect(page.cursorBefore == page.messages.first?.off)
+    }
+
+    /// The seams a screenshot run presses, parsed. `climb` is the one that
+    /// carries a count, because "how far up" is the whole question it answers.
+    @Test func theDebugSeamNamesWhichControlToPress() {
+        #expect(TranscriptStore.debugWantsTop(["ORC_TRANSCRIPT": "tools,top"]))
+        #expect(!TranscriptStore.debugWantsTop(["ORC_TRANSCRIPT": "tools,all"]))
+        #expect(!TranscriptStore.debugWantsTop([:]))
+
+        #expect(TranscriptStore.debugClimbSteps(["ORC_TRANSCRIPT": "climb"]) == 12)
+        #expect(TranscriptStore.debugClimbSteps(["ORC_TRANSCRIPT": "noise,climb:40"]) == 40)
+        // A count that is not a number is a typo, not a request for zero steps.
+        #expect(TranscriptStore.debugClimbSteps(["ORC_TRANSCRIPT": "climb:x"]) == 12)
+        #expect(TranscriptStore.debugClimbSteps(["ORC_TRANSCRIPT": "climb:0"]) == 1)
+        #expect(TranscriptStore.debugClimbSteps(["ORC_TRANSCRIPT": "top,tools"]) == nil)
+        #expect(TranscriptStore.debugClimbSteps([:]) == nil)
     }
 
     /// The first page opens the screen at the newest entry.

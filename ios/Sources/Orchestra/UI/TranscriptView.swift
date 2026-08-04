@@ -52,6 +52,60 @@ public struct TranscriptView: View {
     /// up underneath the strip if it assumes the safe area it is not given.
     @Environment(\.bottomAccessoryHeight) private var accessoryHeight
 
+    /// **The scroll offset, writable.** `ScrollViewReader` can put a *row* at an
+    /// edge and that is all it can do; holding a reading position across a
+    /// prepend needs the offset itself, because the reader is generally in the
+    /// MIDDLE of a row and a page arriving above them is worth some number of
+    /// points, not some number of rows. iOS 18's `ScrollPosition` is the only
+    /// thing in SwiftUI that speaks points.
+    @State private var scroll = ScrollPosition()
+    /// The last geometry the scroll view reported. Every decision on this screen
+    /// that is about *where the reader is* reads this and nothing else.
+    @State private var frame: Frame?
+    /// The trigger's one bit of memory — see `TranscriptRules.topReach`.
+    @State private var armed = true
+    /// What was true when a page was asked for, kept until it lands so the
+    /// reader can be held exactly where they were.
+    @State private var hold: Hold?
+    /// How many pages this screen has asked for. Identifies a `Hold`; see there.
+    @State private var pulls = 0
+    #if DEBUG
+    /// The entries actually on screen, newest-page-first. DEBUG telemetry for
+    /// the `climb` seam and nothing else.
+    @State private var onScreen: [TranscriptEntry.ID] = []
+    #endif
+
+    /// What the scroll view knows about itself, reduced to the four numbers
+    /// this screen actually uses.
+    struct Frame: Equatable {
+        /// The top of the viewport in CONTENT coordinates — how much of the
+        /// window is above the reader. Insets are already in it, which is why
+        /// this and not `contentOffset` is what the trigger reads.
+        var top: Double
+        /// `contentOffset.y` — the coordinate `ScrollPosition` speaks.
+        var offset: Double
+        var content: Double
+        var container: Double
+    }
+
+    /// A reading position, banked while a page is in flight.
+    struct Hold: Equatable {
+        /// Which fetch banked it. The expiry below is a `Task` on a timer, and a
+        /// timer that outlives the position it was started for would drop the
+        /// NEXT one — a page landing with nothing holding the reader still.
+        var seq: Int
+        var offset: Double
+        var content: Double
+        /// The oldest entry held when the page was asked for. The restore only
+        /// fires when this has actually moved — a live tail landing at the
+        /// bottom also grows the content, and shifting the reader for that would
+        /// be the same defect facing the other way.
+        var oldest: TranscriptEntry.ID?
+        /// Whether the reader was at the newest entry. "The bottom" is a reading
+        /// position like any other, and it is the one the first page is held at.
+        var atBottom: Bool
+    }
+
     public init(target: TranscriptTarget, source: any TranscriptSource) {
         self.target = target
         _store = State(initialValue: TranscriptStore(source: source,
@@ -157,7 +211,7 @@ public struct TranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Space.md) {
-                    topMarker(proxy)
+                    topMarker
                     // Keyed on `(off, i)` and never on `off`: one assistant line
                     // carries thinking, prose and several tool calls, and a
                     // `ForEach` keyed on the line would draw one row for the lot
@@ -189,10 +243,18 @@ public struct TranscriptView: View {
                         .frame(height: Space.md + accessoryHeight)
                         .id("bottom")
                 }
+                // Marks the rows as this scroll view's targets so the DEBUG
+                // telemetry can name the entry at the top of the screen. On its
+                // own it changes no behaviour — target *behaviour* is
+                // `.scrollTargetBehavior`, which this screen never sets — and it
+                // is unconditional so the two configurations lay out the same
+                // tree.
+                .scrollTargetLayout()
                 .padding(.horizontal, Space.lg)
                 .padding(.top, Space.md)
             }
             .scrollIndicators(.hidden)
+            .scrollPosition($scroll)
             // The only measurement the follow rule reads. `visibleRect.maxY` is
             // the bottom of what is on screen; within one comfortable line of
             // the content's end counts as being at the newest entry.
@@ -201,6 +263,27 @@ public struct TranscriptView: View {
             } action: { _, atBottom in
                 store.readerAtBottom = atBottom
             }
+            // And the only measurement the BACKWARDS rule reads. One observer,
+            // two consumers: the restore, which needs the content to have grown,
+            // and `TranscriptRules.topReach`, which needs to know how much of the
+            // window is still above the reader.
+            .onScrollGeometryChange(for: Frame.self) { geo in
+                Frame(top: geo.visibleRect.minY,
+                      offset: geo.contentOffset.y,
+                      content: geo.contentSize.height,
+                      container: geo.containerSize.height)
+            } action: { _, now in
+                frame = now
+                settle(now, proxy)
+            }
+            #if DEBUG
+            .onScrollTargetVisibilityChange(idType: TranscriptEntry.ID.self) { ids in
+                // Telemetry only, and only in DEBUG: which entry the reader is
+                // actually looking at is the one fact a screenshot shows and no
+                // store-level test can. See `TranscriptStore.debugClimbSteps`.
+                onScreen = ids
+            }
+            #endif
             // Bumped by the store exactly when the reader is entitled to be
             // moved: the first page, a compaction reload, new output while they
             // were already at the bottom, or the pill being taken. Never on a
@@ -226,7 +309,9 @@ public struct TranscriptView: View {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                 }
                 await store.applyDebugSeam(raw)
-                if let failure = store.debugFirstFailure {
+                if let steps = TranscriptStore.debugClimbSteps() {
+                    await climb(steps)
+                } else if let failure = store.debugFirstFailure {
                     try? await Task.sleep(nanoseconds: 800_000_000)
                     for _ in 0..<4 {
                         proxy.scrollTo(failure, anchor: .top)
@@ -270,47 +355,197 @@ public struct TranscriptView: View {
     }
 
     /// The top of the window: what is above it, or the fact that nothing is.
+    ///
+    /// **It says what is true and it presses nothing.** This row used to carry
+    /// the `.onAppear` that fetched the next page, which is what put the trigger
+    /// and the restore in the same place — see `TranscriptRules.topReach`. It is
+    /// now a label, and an honest one: the old version said `loading older…`
+    /// whenever there was more file behind it, in flight or not, so a reader who
+    /// had genuinely stalled saw exactly what a reader who was waiting saw.
     @ViewBuilder
-    private func topMarker(_ proxy: ScrollViewProxy) -> some View {
-        if store.hasMoreBefore {
-            HStack(spacing: Space.sm) {
-                ProgressView().controlSize(.mini).tint(Palette.textDisabled)
-                Text("loading older…")
+    private var topMarker: some View {
+        Group {
+            if !store.hasMoreBefore {
+                Text("— start of transcript —")
                     .font(OrcFont.meta)
                     .foregroundStyle(Palette.textDisabled)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, Space.sm)
-            .onAppear {
-                Task {
-                    // **Hold the reading position across the prepend**, and
-                    // "the bottom" is a reading position like any other.
-                    // SwiftUI keeps the offset from the TOP, so a page landing
-                    // above the reader slides the line they were on down the
-                    // screen by a page's worth — which on the FIRST page (this
-                    // marker is briefly on screen before the open-at-the-bottom
-                    // scroll lands, so the second page is prefetched at once)
-                    // left the screen opening halfway up its own transcript.
-                    // A screenshot found that; nothing else would have.
-                    let wasAtBottom = store.readerAtBottom
-                    let anchor = store.visible.first?.id
-                    await store.loadOlder()
-                    if wasAtBottom {
-                        await toBottom(proxy)
-                    } else if let anchor {
-                        proxy.scrollTo(anchor, anchor: .top)
-                    }
+            } else if store.loadingOlder {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.mini).tint(Palette.textDisabled)
+                    Text("loading older…")
+                        .font(OrcFont.meta)
+                        .foregroundStyle(Palette.textDisabled)
+                }
+            } else {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "arrow.up")
+                        .font(OrcFont.meta)
+                        .foregroundStyle(Palette.textDisabled)
+                        .accessibilityHidden(true)
+                    Text("older output above")
+                        .font(OrcFont.meta)
+                        .foregroundStyle(Palette.textDisabled)
                 }
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, Space.sm)
+        // On every branch, so the `top` seam has something to scroll to whether
+        // or not byte 0 was reached.
+        .id("top")
+    }
+
+    // MARK: - Reaching backwards
+
+    /// One scroll event, and the two things it can mean.
+    ///
+    /// **The restore runs first and returns.** The offset this event reports is
+    /// the one SwiftUI kept across a prepend — the reader's line has just slid a
+    /// page down the screen — so it is not a position to judge a trigger by; it
+    /// is a position to undo. Judging it would be the fight the whole rule exists
+    /// to end, one layout pass earlier.
+    private func settle(_ now: Frame, _ proxy: ScrollViewProxy) {
+        if var hold {
+            if restore(hold, now, proxy) { return }
+            // Not the page landing — the reader is still moving, or a row below
+            // the fold just resolved its real height. **Re-bank.** A `LazyVStack`
+            // revises `contentSize` continuously as it realises rows (measured:
+            // ±1,500 pt over ten scrolls with no page loaded at all), so a delta
+            // taken against a stale baseline measures that churn as well as the
+            // prepend. Re-banking on every event until the window actually grows
+            // narrows the measurement to the one layout pass that matters.
+            hold.offset = now.offset
+            hold.content = now.content
+            self.hold = hold
+            return
+        }
+        let reach = TranscriptRules.topReach(offsetFromTop: now.top,
+                                             armed: armed,
+                                             hasMoreBefore: store.hasMoreBefore,
+                                             loading: store.loadingOlder)
+        armed = reach.armed
+        guard reach.load else { return }
+        pull(now)
+    }
+
+    /// Put the reader back exactly where the page found them.
+    ///
+    /// **By points, not by row.** The reader is generally in the middle of an
+    /// entry — an assistant turn on this screen is routinely taller than the
+    /// phone — so "scroll to the row that used to be at the top" is only exact
+    /// when the reader is exactly at a row boundary, which is exactly the one
+    /// case the old trigger produced and the one case that made it re-fire.
+    /// The page arrived above the viewport, so it is worth `content` growth in
+    /// points, and adding that to the offset holds the line under the thumb
+    /// still to the pixel.
+    ///
+    /// Returns whether this event was the page landing.
+    private func restore(_ hold: Hold, _ now: Frame, _ proxy: ScrollViewProxy) -> Bool {
+        // The window has to have actually gained older entries. A live tail
+        // landing at the bottom grows the content too, and moving the reader for
+        // that would be this screen's other defect, facing the other way.
+        guard store.entries.first?.id != hold.oldest, now.content > hold.content else {
+            return false
+        }
+        self.hold = nil
+        #if DEBUG
+        print("ORC-HOLD landed above=\(Int(now.top)) grew=\(Int(now.content - hold.content))"
+              + " from=\(Int(hold.offset)) to=\(Int(hold.offset + (now.content - hold.content)))"
+              + " atBottom=\(hold.atBottom) anchor=\(onScreen.first.map { "\($0.off)/\($0.i)" } ?? "-")")
+        #endif
+        if hold.atBottom {
+            // "The bottom" is a reading position like any other, and it is the
+            // one the FIRST page is held at: this fetch fires during the opening
+            // layout, before the open-at-the-newest scroll has landed, and a
+            // point-for-point restore there would strand a freshly opened
+            // transcript halfway up itself. A screenshot found that; nothing
+            // else would have.
+            Task { await toBottom(proxy) }
         } else {
-            Text("— start of transcript —")
-                .font(OrcFont.meta)
-                .foregroundStyle(Palette.textDisabled)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, Space.sm)
-                .id("top")
+            scroll.scrollTo(y: hold.offset + (now.content - hold.content))
+        }
+        return true
+    }
+
+    /// Ask for one page, and bank the position it has to be held at.
+    private func pull(_ now: Frame) {
+        pulls &+= 1
+        let seq = pulls
+        hold = Hold(seq: seq, offset: now.offset, content: now.content,
+                    oldest: store.entries.first?.id, atBottom: store.readerAtBottom)
+        #if DEBUG
+        print("ORC-PULL above=\(Int(now.top)) content=\(Int(now.content))"
+              + " cursor=\(store.cursorBefore ?? -1)"
+              + " anchor=\(onScreen.first.map { "\($0.off)/\($0.i)" } ?? "-")")
+        #endif
+        Task {
+            await store.loadOlder()
+            // A page that added no visible height at all — every entry on it
+            // filtered out by the noise toggle — never reaches `restore`, and a
+            // banked position nothing will ever redeem would hold the NEXT one
+            // hostage. Give the layout a pass to land in, then drop it — but
+            // only if it is still ours.
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            if hold?.seq == seq { hold = nil }
         }
     }
+
+    #if DEBUG
+    /// `ORC_TRANSCRIPT=climb` / `climb:20` — **a thumb, in points.**
+    ///
+    /// A simulator has no thumb, and the defect this seam was written for lives
+    /// nowhere else: the store's cursor walk was correct the whole time, so the
+    /// existing `top` seam — which calls `loadOlder` in a loop — passed while a
+    /// real reader could not reach a single line of what it fetched. The only
+    /// honest witness is the scroll view itself.
+    ///
+    /// So this climbs one viewport at a time through **`ScrollPosition`, the
+    /// same offset the restore writes**, and calls nothing else. Every fetch it
+    /// causes is one the screen's own geometry trigger decided on. It reports,
+    /// per step, the four numbers that separate progress from a treadmill:
+    /// how much window is above the reader, how far back the window now reaches,
+    /// how many entries are held, and which entry is at the top of the screen.
+    private func climb(_ steps: Int) async {
+        // After `toBottom`'s last pass, so the two are not fighting over the
+        // same scroll view.
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        note(step: 0)
+        for step in 1...steps {
+            guard let now = frame else { break }
+            // One screen, less a couple of lines of overlap — a flick, not a
+            // teleport.
+            let jump = max(240, now.container - 120)
+            scroll.scrollTo(y: max(0, now.offset - jump))
+            // The geometry event, the decision, the round trip, the restore.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            for _ in 0..<60 where store.loadingOlder {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            note(step: step)
+        }
+    }
+
+    /// One machine-readable line per step. Read with
+    /// `xcrun simctl launch --console-pty`.
+    private func note(step: Int) {
+        let f = frame
+        let top = onScreen.first.map { "\($0.off)/\($0.i)" } ?? "-"
+        print("ORC-CLIMB step=\(step)"
+              + " above=\(Int(f?.top ?? -1))"
+              + " content=\(Int(f?.content ?? -1))"
+              + " container=\(Int(f?.container ?? -1))"
+              + " entries=\(store.entries.count)"
+              + " visible=\(store.visible.count)"
+              + " oldest=\(store.entries.first?.off ?? -1)"
+              + " newest=\(store.entries.last?.off ?? -1)"
+              + " cursor=\(store.cursorBefore ?? -1)"
+              + " more=\(store.hasMoreBefore)"
+              + " armed=\(armed)"
+              + " onscreen=\(onScreen.count)"
+              + " anchor=\(top)")
+    }
+    #endif
 
     /// **The reader is never yanked.** New output while they are scrolled up
     /// into history is offered, not applied — this is the one interaction on

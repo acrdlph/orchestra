@@ -300,6 +300,93 @@ public enum TranscriptRules {
         return !current.isSameFile(as: previous)
     }
 
+    // MARK: - Reaching backwards
+
+    /// What the top of the window should do at this scroll position.
+    public struct TopReach: Equatable, Sendable {
+        /// Whether the trigger is armed **after** this event.
+        public let armed: Bool
+        /// Whether to fetch one older page now.
+        public let load: Bool
+
+        public init(armed: Bool, load: Bool) {
+            self.armed = armed
+            self.load = load
+        }
+    }
+
+    /// **The tripwire that asks for an older page — and the rule that stops it
+    /// fighting the restore that follows it.**
+    ///
+    /// A user on a real phone reported exactly the failure this rule exists to
+    /// prevent: *"when i scroll up to the top of the full log, it keeps 'loading
+    /// older …' but they dont seem to actually appear."* Nothing was wrong with
+    /// the server, the cursor walk or the filter — pages arrived, carried visible
+    /// content, and were prepended correctly. What was wrong was **where the
+    /// reader was put afterwards**.
+    ///
+    /// The trigger used to be an `.onAppear` on the `loading older…` row, which
+    /// sits at the very top of the list, and the restore that followed a load
+    /// scrolled to `visible.first` — the oldest entry the window ALREADY held,
+    /// which is the row immediately below that same trigger. So every user-driven
+    /// load parked the reader back on the tripwire with the page that had just
+    /// arrived stacked above the viewport, and the next flick upwards tripped it
+    /// again before a line of it could be read. The loader spins, the window
+    /// grows, and nothing older ever reaches the screen.
+    ///
+    /// So the trigger is a value driven by **scroll geometry** rather than by a
+    /// row's lifecycle, and it carries one bit of memory:
+    ///
+    /// * **it fires early** — `prefetchMargin` before the top, so the page is on
+    ///   its way while the reader still has content in front of them;
+    /// * **it disarms the instant it fires**, because the restore that follows
+    ///   lands the reader near the top of the window by construction, and a
+    ///   trigger that re-fires there is a trigger fighting its own restore;
+    /// * **it re-arms only on evidence the reader consumed what arrived** —
+    ///   either they are `rearmMargin` clear of the top (the page that landed is
+    ///   between them and it), or they are hard against the top, which after a
+    ///   restore means they scrolled through the whole of it.
+    ///
+    /// `rearmMargin > prefetchMargin` is the hysteresis and it is what makes
+    /// "consumed" mean anything: re-arming at the distance the trigger fires at
+    /// would let one point of drift fire a second load.
+    ///
+    /// The arrival leg is not a loophole in the first: a page that adds less than
+    /// `prefetchMargin` of height cannot be "scrolled through" in any meaningful
+    /// sense, and refusing to fetch again there is how the old defect looked from
+    /// the reader's side — a spinner at the top of a list that will not grow.
+    /// Reaching the top of the window with more file behind it is always a
+    /// request for more, and it is answered.
+    public static func topReach(offsetFromTop: Double,
+                                armed: Bool,
+                                hasMoreBefore: Bool,
+                                loading: Bool,
+                                prefetch: Double = prefetchMargin,
+                                rearm: Double = rearmMargin,
+                                arrival: Double = arrivalMargin) -> TopReach {
+        // Byte 0 is on screen: there is nothing above to ask for, and the
+        // trigger's state is left exactly as it was found.
+        guard hasMoreBefore else { return TopReach(armed: armed, load: false) }
+        var armed = armed
+        if !armed, offsetFromTop >= rearm || offsetFromTop <= arrival { armed = true }
+        guard armed, !loading, offsetFromTop <= prefetch else {
+            return TopReach(armed: armed, load: false)
+        }
+        return TopReach(armed: false, load: true)
+    }
+
+    /// How far short of the top of the window a page is asked for — about one
+    /// screen on a phone, so the fetch overlaps the reading rather than
+    /// interrupting it.
+    public static let prefetchMargin: Double = 900
+    /// How far clear of the top the reader must travel for the trigger to arm
+    /// again. Deliberately more than twice `prefetchMargin`: it is the distance
+    /// a page has to be worth before the next one is asked for.
+    public static let rearmMargin: Double = 2200
+    /// "Hard against the top." A few points, not zero, because a scroll view at
+    /// rest at its top edge does not always report exactly 0.
+    public static let arrivalMargin: Double = 8
+
     // MARK: - Following
 
     /// What the view is allowed to do when new entries land at the bottom.
