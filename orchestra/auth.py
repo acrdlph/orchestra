@@ -1123,6 +1123,17 @@ def allowed_hosts():
     itself from — so a phone reaching us by the detected node address is us even
     if `CFG["host"]` was spelled some other legitimate way.
 
+    Plus, on a non-loopback bind, **the MagicDNS name**, because that is what
+    the pairing QR now hands the phone (`pairing.advertised` — a store-built app
+    can carry an ATS exception for `ts.net` and cannot carry one for each user's
+    `100.x` literal). A server that advertises a name it then refuses to answer
+    to is a server nobody can pair with, which is exactly what shipped for one
+    evening: the phone dialled the name, arrived, and was told *"this server
+    does not answer to that host"* by its own front door. **The rule is that
+    everything this server ADVERTISES it must also ANSWER to**, and
+    `tests/test_pairing.py` pins the two together so they cannot drift apart
+    again.
+
     A loopback-only server (the default) yields exactly the loopback aliases,
     which is correct: nothing off this machine is a legitimate `Host` when we
     are not listening off this machine.
@@ -1138,6 +1149,9 @@ def allowed_hosts():
             addr = tailnet.address()
             if addr:
                 hosts.add(_authority_host(str(addr)))
+            name = tailnet.dns_name()
+            if name:
+                hosts.add(_authority_host(str(name)))
     with _lock:
         _allowed_hosts.update(host=bound, set=hosts)
     return hosts

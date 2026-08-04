@@ -1229,6 +1229,34 @@ class TestTheAdvertisedHost(PairCase):
         self.assertEqual(ok["server"]["host"], self.NAME)
         self.assertEqual(ok["server"]["addr"], "100.113.110.31")
 
+    def test_the_server_answers_to_the_host_it_advertises(self):
+        """The invariant that was missing, and it cost an evening.
+
+        `pairing.advertised` began handing the phone the MagicDNS name while
+        `auth.allowed_hosts` still listed only the addresses the socket was
+        bound to — so the QR sent the phone to a name the front door then
+        refused with *"this server does not answer to that host"*. Neither
+        change was wrong alone; together they made pairing impossible. Whatever
+        is advertised must be answerable, and that is asserted here rather than
+        in either module, because it is a fact ABOUT THE PAIR.
+        """
+        fb.tailnet.dns_name = lambda: self.NAME
+        saved = fb.tailnet.address
+        fb.tailnet.address = lambda: "100.113.110.31"
+        try:
+            for bound in ("100.113.110.31", "127.0.0.1"):
+                fb.CFG["host"] = bound
+                fb.auth._allowed_hosts.update(host=None, set=None)   # drop the memo
+                advertised = fb.pairing.advertised(bound)
+                self.assertIn(fb.auth._authority_host(advertised),
+                              fb.auth.allowed_hosts(),
+                              f"bound to {bound}, advertises {advertised}, "
+                              f"but would refuse that Host")
+                self.assertTrue(fb.auth.host_allowed(f"{advertised}:4242"))
+        finally:
+            fb.tailnet.address = saved
+            fb.auth._allowed_hosts.update(host=None, set=None)
+
     def test_dns_name_requires_magicdns_and_strips_the_root_dot(self):
         real = self._dns          # setUp faked the module attr; drive the real one
         saved = fb.tailnet._run
