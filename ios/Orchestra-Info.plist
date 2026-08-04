@@ -16,10 +16,19 @@
 	<string>orchestra</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!--
+	  Version comes from the PROJECT, not a literal here — the two build
+	  settings are the single source of truth (`ios/release.sh` and
+	  ExportOptions' `manageAppVersionAndBuildNumber: false` both assume it).
+	  Xcode expands these `$(…)` references at build time even with
+	  `GENERATE_INFOPLIST_FILE = NO`, so `MARKETING_VERSION = 1.0` in the
+	  pbxproj is what the .ipa actually reports. A hardcoded `0.1` here silently
+	  won the version and shipped in the first archive; do not put a literal back.
+	-->
 	<key>CFBundleShortVersionString</key>
-	<string>0.1</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchScreen</key>
