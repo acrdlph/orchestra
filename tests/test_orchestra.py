@@ -10,6 +10,7 @@ globals (CFG, _limits, DEMO); tests set those and restore them.
 """
 
 import json
+import os
 import pathlib
 import shlex
 import shutil
@@ -2187,10 +2188,19 @@ class TestProvenInTranscript(unittest.TestCase):
             {"type": "user", "message": {"content": "pad " * 400}}) + "\n")
         st = self.fp.stat()
         offset = st.st_size                       # ~1.6 KB into the OLD file
-        self.fp.unlink()                          # new inode from here on
-        self.fp.write_text(
+        # A new inode at the SAME path, by atomic replace rather than
+        # unlink-then-rewrite. The old way asked the filesystem for a fresh
+        # inode and ext4 happily handed back the one just freed, so the
+        # precondition below failed on Linux and this test was red in CI from
+        # the day it was written — on APFS it passed, which is why nobody saw
+        # it. `os.replace` gives the path the REPLACEMENT's inode, which is
+        # deterministically different on both, and it is also how a compaction
+        # actually rewrites a transcript.
+        other = self.fp.with_suffix(".rewrite")
+        other.write_text(
             json.dumps({"type": "user", "message": {"content": "continue"}}) + "\n"
             + json.dumps({"type": "user", "message": {"content": "tail " * 500}}) + "\n")
+        os.replace(other, self.fp)
         self.assertGreater(self.fp.stat().st_size, offset)   # offset lands inside
         self.assertNotEqual(self.fp.stat().st_ino, st.st_ino)
         self.assertTrue(fb._proven_in_transcript(

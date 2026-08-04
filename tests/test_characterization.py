@@ -9,12 +9,22 @@ that changes behaviour, so the diff shows exactly which cases moved:
 
     python3 tests/characterize.py --record
 
-The golden names the machine it was recorded on — `"user"` (from `getpass.getuser()`) and
-`"hostname"`, both of which `collect_state` puts on the wire — and that is left exactly as it
-is, on purpose. This file is a RECORDING, not a fixture somebody authored: editing values into
-it by hand makes it disagree with what `--record` produces, which is the one property the net
-has. The hand-written fixtures that DID name a machine (`tests/qr_ref.py`, and the QR digest
-case in `tests/test_qr.py`) were the ones worth neutralising, and were.
+The golden used to name the machine it was recorded on — `"user"` (from `getpass.getuser()`)
+and `"hostname"`, both of which `collect_state` puts on the wire. That was defended on the
+grounds that this file is a RECORDING and hand-editing it would make it disagree with what
+`--record` produces, which is the one property the net has. The defence was right and the
+conclusion was wrong: a golden carrying one laptop's user name can only ever match on that
+laptop, so **this check failed on every CI run from the day it was added** — and the first line
+of this docstring says CI enforcing it is the whole point. A net that is always red is a net
+nobody reads.
+
+So the machine identity is normalised **at capture**, in `characterize._state_payload`, exactly
+the way the temp path already was — not edited into the golden afterwards. The golden is still
+precisely what `--record` emits, the keys are still compared, and a dropped or renamed field
+still fails. What no longer fails is running the suite on a different computer.
+
+The hand-written fixtures that DID name a machine (`tests/qr_ref.py`, and the QR digest case in
+`tests/test_qr.py`) were neutralised earlier, for the same reason.
 """
 
 import pathlib

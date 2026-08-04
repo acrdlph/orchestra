@@ -426,6 +426,18 @@ def _state_payload(mod):
         # out. Python's sort is stable and the fixture is fixed, so the order is
         # deterministic as it stands.
         state.pop("other_procs", None)      # whatever else is running on the box
+        # WHO recorded this is not behaviour; THAT the fields exist is. Both
+        # come straight off the machine (`getpass.getuser`, the hostname), so a
+        # golden recorded on a laptop could only ever match on that laptop —
+        # which left this net red in CI from the day it was added, and a net
+        # that is always red is a net nobody reads. Normalised at CAPTURE, the
+        # same way `<TMP>` is, rather than edited into the golden afterwards:
+        # the file stays exactly what `--record` produces, which is the one
+        # property it has. The KEYS survive, so a rename or a drop — the thing
+        # this check actually exists to catch — still fails it.
+        for machine_key in ("user", "hostname"):
+            if machine_key in state:
+                state[machine_key] = f"<{machine_key.upper()}>"
         subs = ((str(tmp), "<TMP>"), (mod.munge(str(tmp)), "<MUNGED-TMP>"))
         return [{"in": "collect_state(fixture)", "out": _normalise(state, subs=subs)}]
     except Exception as exc:                        # noqa: BLE001
