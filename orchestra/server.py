@@ -44,7 +44,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import (config, auth, gitrepo, limits, observer, terminal, chat,
-               dispatch, resume, finish, pairing, tailnet, notify, idem)
+               dispatch, resume, finish, pairing, tailnet, notify, idem,
+               sessionlog)
 
 MAX_SUBSCRIBERS = 32        # concurrent SSE streams; config key "sse_max_subscribers"
 KEEPALIVE_S = 25.0          # silence before a comment frame; key "sse_keepalive_s"
@@ -460,6 +461,20 @@ class Handler(BaseHTTPRequestHandler):
                     if account and re.fullmatch(r"[0-9a-fA-F-]+", sid) \
                     else {"ok": False, "error": "need account & sid"}
                 body = json.dumps(result).encode()
+                ctype = "application/json"
+            elif _v1_match(self.path, "/api/v1/sessions"):
+                # The full transcript (API.md §9.11), which `/api/chat` above
+                # cannot be: that one is capped at 900 characters with every
+                # newline collapsed, and the phone's chat screen is the one
+                # place where the structure IS the content. Both stay — the
+                # board still reads the drawer through `/api/chat`.
+                #
+                # A READ, and it is guarded like every other one: `parse_request`
+                # ran `auth.check` before this method could be dispatched, and
+                # nothing here adds an exemption, a second check, or a
+                # `Sec-Fetch-Site` requirement. Reading a transcript is what a
+                # `read` token is FOR.
+                body = json.dumps(self._sessions_get()).encode()
                 ctype = "application/json"
             elif _v1_match(self.path, "/api/v1/events"):
                 # The durable side of push (API.md §9.22). Push is lossy; this is
@@ -1043,6 +1058,43 @@ class Handler(BaseHTTPRequestHandler):
             # missing, which is the whole point of a test button.
             return self._json(200, notify.send_test(devid))
         return self._json(404, {"ok": False, "error": "unknown_route"})
+
+    def _sessions_get(self):
+        """`/api/v1/sessions/{sid}/messages` and `…/messages/at/{off}`.
+
+        THE HOUSE ERROR SHAPE, not `/api/v1`'s status codes: 200 carrying
+        `{"ok": false, "error": …}`, exactly as `/api/chat` answers an unknown
+        account. These two routes replace that one on the phone's chat screen,
+        and a client that branches on the status line must not break the day it
+        switches over. The status-code convention the other v1 routes follow is
+        about ACTING (a 409 the caller has to handle before parsing); a read
+        that cannot find a transcript has nothing to say that the body cannot.
+
+        The path is split into segments and matched by POSITION — `/api/v1`
+        "resolves by exact match … there is no prefix routing" (API.md §2.3),
+        and `_v1_match` above already refused everything outside the segment.
+        `sid` is validated with the same character class `/api/chat` uses, and
+        it is validated BEFORE it reaches a glob: it is the only part of the
+        path that becomes a filesystem pattern.
+        """
+        parts = self.path.split("?", 1)[0].strip("/").split("/")
+        if len(parts) < 5 or parts[4] != "messages":
+            return {"ok": False, "error": "unknown route"}
+        sid = parts[3]
+        if not re.fullmatch(r"[0-9a-fA-F-]+", sid):
+            return {"ok": False, "error": "bad sid"}
+        q = _query(self.path)
+        account = q.get("account")
+        if not account:
+            return {"ok": False, "error": "need account & sid"}
+        if len(parts) == 5:
+            return sessionlog.read_messages(
+                account, sid, limit=q.get("limit"), before=q.get("before"),
+                fmt=q.get("format"))
+        if len(parts) == 7 and parts[5] == "at":
+            return sessionlog.read_entry(account, sid, parts[6], i=q.get("i"),
+                                         fmt=q.get("format"))
+        return {"ok": False, "error": "unknown route"}
 
     def _events_get(self):
         """`/api/v1/events`, `/events/{id}`, `/events/open` (API.md §9.22)."""
