@@ -41,13 +41,24 @@ A native SwiftUI client for the orchestra board.
   Every mutation refuses in the server's own voice and every control stays
   visible while it does. See "Phase 5 — the demo fleet" below.
 
+* **Phase 6** made the transcript **complete**. `/api/chat` is forty turns with
+  every newline collapsed to a space, each one cut at 900 characters, no tool
+  traffic at all, and a truncation the client could only infer from a trailing
+  `…`. Beside it now sits `GET /api/v1/sessions/{sid}/messages` — the whole
+  file, paged by byte offset, newlines intact, tool calls and results first
+  class, machine text marked rather than dropped, `truncated` a real field and
+  `chars` the true length. The phone half is a pushed reading screen that
+  resolves completeness against readability the way a log viewer does:
+  everything is present, structure decides what is open. See "Phase 6 — the full
+  transcript" below.
+
 ## Build and run it — the only way this is verified
 
 Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 184 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 235 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -93,6 +104,17 @@ SIMCTL_CHILD_ORC_SCREEN=demo:limits                …
 SIMCTL_CHILD_ORC_SCREEN=demo:map                   …
 SIMCTL_CHILD_ORC_SCREEN=demo:mission               …
 SIMCTL_CHILD_ORC_SCREEN=demo:finish:checkout-flow  …
+
+# 9. phase 6 — the full transcript, and the taps a simulator has no finger for
+SIMCTL_CHILD_ORC_SCREEN=transcript:ConfidAI/account6/<sid>  xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=demo:transcript:search-index/personal/9c1f4a2e-7b30-4c58-9a11-2d6e83f0b415 \
+SIMCTL_CHILD_ORC_TRANSCRIPT=top,tools,all,noise,fail \
+     xcrun simctl launch booted sh.orchestra.app
+#   top   — every `load older`, to `— start of transcript —`
+#   tools — every folded tool block, opened
+#   all   — every `show all`, taken (a real /messages/at/ fetch each)
+#   noise — the toolbar's `show system noise`
+#   fail  — park on the first tool result the tool reported an error for
 SIMCTL_CHILD_ORC_SCREEN=demo:resume:release-notes/a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2  …
 ```
 
@@ -135,19 +157,21 @@ ios/
 ├── App/                       composition + the two views that need UIKit
 │   └── Fonts/                 IBM Plex Mono ×4 + OFL.txt — see below
 └── Sources/Orchestra/
-    ├── Model/    Wire · Enums · StreamFrame · Chat · Limits · Pairing
+    ├── Model/    Wire · Enums · StreamFrame · Chat · Transcript · Limits
+    │             Pairing
     ├── API/      OrchestraClient (actor) · EventStream · SSE · Endpoint
-    │             OrchestraError · Keychain
-    ├── Rules/    Triage
+    │             TranscriptSource · OrchestraError · Keychain
+    ├── Rules/    Triage · TranscriptRules
     ├── Format/   RelativeTime · TextRules
     ├── Demo/     DemoClock · DemoFleet · DemoLimits · DemoChat
-    │             DemoTopology · DemoPayload · DemoCopy   (NOT under UI —
-    │             it is data and rules, so `swift test` decodes all of it)
-    ├── Store/    FleetStore · FleetApplier · ChatStore · LimitsStore
-    │             PairingStore                    (@MainActor @Observable)
+    │             DemoTranscript · DemoTopology · DemoPayload · DemoCopy
+    │             (NOT under UI — it is data and rules, so `swift test`
+    │             decodes all of it)
+    ├── Store/    FleetStore · FleetApplier · ChatStore · TranscriptStore
+    │             LimitsStore · PairingStore      (@MainActor @Observable)
     └── UI/       Palette · Typography · StatusStyle · ConnectionBar
-                  FleetView · WorktreeDetailView · ChatView · LimitsView
-                  ServerView · rows
+                  FleetView · WorktreeDetailView · ChatView · TranscriptView
+                  LimitsView · ServerView · rows
 ```
 
 **IBM Plex Mono is bundled now** — the brand face of the desktop board, not SF
@@ -847,3 +871,154 @@ two lines, which the bar already handles because its height is *measured*.
   field appear on a production push.
 - **A settings read-back route, quiet-hours DST correctness beyond the offset,
   and the widget / Live Activity surfaces of `IOS-APP.md` §1.2** — all additive.
+
+## Phase 6 — the full transcript
+
+The ask, in the user's words: *"I want to see just as much on the phone as one
+can see in a real terminal window with Claude Code running. If I go down to that
+level, I want to know the details. I want to be able to scroll through the
+entire output. Ideally we make it still kind of pleasant to look at."*
+
+### What it does
+
+A **pushed reading screen** (the `full log` button in the chat screen's
+toolbar), not a mode of `ChatView`. `ChatView` is the acting surface — composer,
+receipts, refusal copy — and it is proven; this wants the whole screen height,
+its own bottom-anchored scroll and its own filter, and a second bottom-pinned
+control inside a pushed destination is the defect this project has already hit
+twice.
+
+Two requirements in tension — **completeness** (nothing unreachable) and
+**readability** (a raw terminal dump on a 6" screen is unreadable) — resolved
+the way a good log viewer resolves it: *everything is present, structure decides
+what is open.*
+
+* `user` / `assistant` prose is **expanded**; `tool_use` / `tool_result` are
+  **folded** to one dense line carrying the argument you recognise the call by
+  and the size of what is behind it (`Read  search/index/shardmap.py · 4,708 ch`).
+  A terminal dumps five hundred lines of a file read at you; this offers them.
+* `meta` — system reminders, harness text, thinking blocks, inlined subagent
+  work — is **hidden behind one toolbar toggle**, off by default, and the strip
+  under the title says how many entries the toggle is holding, so hidden never
+  reads as absent.
+* A 3 pt left rail carries the role colour in the board's own language: `user`
+  cyan, `assistant` sage, `tool_use` amber, `tool_result` grey, `system`/`meta`
+  disabled and dimmed. Body in IBM Plex Mono, Dynamic Type throughout.
+* An expanded tool block **does not wrap** — command output, diffs and code are
+  column-aligned and wrapping destroys the alignment that makes them readable —
+  so each one is its own horizontally scrollable container. **The page itself
+  never scrolls sideways.**
+* **Truncation is stated in both numbers and the button fetches.**
+  `· cut at 4,000 of 12,431 — show all` re-reads the line from
+  `/messages/at/{off}?i=` with a 256 KB ceiling instead of 4,000 characters.
+  The chat drawer's `show full` only ever un-clamped a `lineLimit` on text the
+  server had already dropped; it is now offered ONLY for text that merely looks
+  long, and a bubble the server cut offers `open the full log` instead.
+* Opens at the newest entry; scrolling up loads older by `cursor_before` with a
+  `loading older…` row, and stops at `— start of transcript —` when byte 0 was
+  actually reached.
+* **Auto-scroll only when the reader is already at the bottom.** Scrolled up
+  into history, new output is offered as a `↓ N new` pill and the view does not
+  move. It is a pure function (`TranscriptRules.follow`) with a test, because it
+  is the one interaction people notice immediately when it is wrong.
+
+### Driven against the real wire, on a 103 MB transcript
+
+`python3 -m orchestra --port 4297`, a real device token, and
+`~/.claude-account6/projects/…/60971837-….jsonl` — **103,839,151 bytes**:
+
+```
+page  1:  30 msgs  cursor=103647926  more=True
+page  2:  30 msgs  cursor=103494098  more=True
+page  4:   8 msgs  cursor=98377448   more=True     <- fewer than `limit`
+page  8:  12 msgs  cursor=90024343   more=True
+...
+12 pages, 294 unique messages, ordered=True, 0.22 s total
+```
+
+* **A page returns fewer than `limit` and that is normal, not the end.** Four of
+  twelve pages did (8, 22, 12, 12) — a page takes whole LINES only, because
+  `cursor_before` is a byte offset and half a line has no offset to name. A
+  client that reads a short page as "we are done" stops mid-transcript with no
+  error anywhere.
+* No duplicates and no gaps across the whole walk: `before` is exclusive.
+* `/messages/at/{off}?i=` returned the same message uncapped — 4,923 characters
+  against the paged route's 4,000 — with `truncated: false`.
+* Every refusal string the client branches on was produced for real:
+  `unknown account nope`, `need account & sid`, `bad limit`, `bad before`,
+  `bad format`, `no entry at that offset` — all of them **200**, like
+  `/api/chat`.
+* Over 685 real messages the wire emitted exactly three key sets and no
+  surprises: `tool` present on 512, `why` on 109, neither on 64. `tool.name` is
+  genuinely `null` on the wire (a result whose call fell outside the read
+  window) and `tool.ok` is genuinely `null` on every call — the two nullables
+  that would have been easiest to model as non-optional and wrong.
+
+### What the wire does that the brief did not predict
+
+| # | claim | what the server does |
+|---|---|---|
+| 44 | `mtime_ns` is a timestamp like any other on this wire | it is ~1.78 x 10^18 — nanoseconds, not seconds. It fits `Int64` with room, but it is 10^9 times the epoch every other clock here uses, and a `Double`-typed model would lose exactly the low digits that make it a change detector |
+| 45 | a Claude-home label needs no escaping | this ROUTE percent-decodes (`_query` -> `parse_qs`), unlike `/api/chat`'s raw-path `re.search` (finding 22) — so it is the first route where the client MUST encode, and `URLComponents.queryItems` is not enough: it leaves `+` literal and `parse_qs` reads a literal `+` as a space. `Endpoint.strictQueryEncoding` encodes down to the RFC 3986 unreserved set for these two routes only, because encoding the OLDER routes would break the case that works today |
+
+### The two defects a screenshot found
+
+Both compiled, both rendered, both were quietly wrong.
+
+**The screen opened five rows above its newest entry.** One `scrollTo` is not
+enough with a `LazyVStack`: rows below the viewport have never been laid out, so
+the scroll view works from ESTIMATED heights and lands short, then materialises
+the rows that change the content size under the scroll it just finished. It is
+now re-asked after each layout pass (`TranscriptView.toBottom`), which converges
+and is a no-op once it has arrived. The same bug had a second face: the top
+marker is briefly on screen during the first layout, so page two is prefetched
+at once, and the prepend used to restore the OLD top — putting a freshly opened
+transcript halfway up itself.
+
+**The newest entry sat under the connection strip.** The third time this project
+has hit the same shape: a pushed navigation destination does not receive the
+`safeAreaInset` the tab applied outside the `NavigationStack`. And the obvious
+fix was wrong too — `.padding(.bottom, accessoryHeight)` on the `LazyVStack`
+sits BELOW the scroll anchor, so `scrollTo(.bottom)` stops with the anchor at
+the viewport edge and the last entry is behind the strip anyway. The inset has
+to BE the anchor: the bottom spacer is `Space.md + accessoryHeight` tall.
+
+### One deliberate deviation from the design spec
+
+The spec asks for an expanded tool block to have "a bounded height and its own
+vertical scroll". It has the bounded height and the horizontal scroll; the
+vertical half is a **line budget** instead (40 lines, with
+`chevron.down  320 more lines` to lift it). A bounded vertical scroll view
+nested inside the page's own vertical scroll captures the gesture on iOS and
+traps a thumb inside a code block — the reader's scroll simply stops working,
+which is worse on a phone than any amount of length. Growing the page and
+letting the page's one scroll view carry it reaches the same bytes with no
+gesture conflict, and the horizontal axis — the one the page must never have —
+is still the block's own.
+
+### Not done, and honest about it
+
+- **`format=clean` is never requested.** The screen asks for `raw` always,
+  because newlines are the entire point of it. `clean` is on the wire and the
+  client can send it; nothing in the UI offers it, because "the same text with
+  its structure removed" is not a reading mode anybody wants here.
+- **No search, no jump-to-time, no share.** A 103 MB transcript is exactly where
+  "find the line where it broke" is worth having, and the route has no `after=`
+  or `q=` to build it on: a client-side search can only see the pages it holds,
+  which would be a search that silently means "search what you scrolled past".
+  It wants a server-side one.
+- **The live tail is a poll of the newest page, not a stream.** The route pages
+  BACKWARDS only, so following a live session means re-reading the newest page.
+  The cost is kept honest by probing with `limit=1` first and fetching a real
+  page only when `file.size` moved. A hole — more output between two polls than
+  one page holds — is detected (`TranscriptRules.tail` -> `.gap`) and never
+  stitched shut; the pill says `new output` rather than a count it cannot know.
+- **A compaction was never observed live.** The inode/dev reset is driven by a
+  test and by the store's own seam, not by a real `/compact`.
+- **The bounded window trims only at the old end and only while the reader is at
+  the newest entry**, so a reader parked in the middle of a very long transcript
+  holds every page they walked. 900 entries is the ceiling; nothing evicts under
+  a thumb.
+- **The live tail was never watched against a growing file.** The cadence, the
+  probe and the `.gap` branch are driven by tests; a real agent writing while
+  the screen was open was not.

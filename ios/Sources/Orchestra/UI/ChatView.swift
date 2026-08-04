@@ -48,6 +48,16 @@ public struct ChatView: View {
     /// actually sent to a real agent" is the gate this phase has to pass.
     private let autoSend: String?
 
+    /// The client, kept because the full-log screen needs a `TranscriptSource`
+    /// and the demo needs its canned one instead.
+    private let client: OrchestraClient
+    /// Whether the pushed full-transcript screen is up. `navigationDestination`
+    /// on a bool rather than a `NavigationLink`, because two different things
+    /// push it — the toolbar button and the truncation footnote on a bubble —
+    /// and because the `#if DEBUG` seam has to be able to press it without a
+    /// finger.
+    @State private var showTranscript = false
+
     public init(worktree: String, account: String, sid: String,
                 store: FleetStore, client: OrchestraClient, autoSend: String? = nil) {
         self.worktree = worktree
@@ -55,6 +65,7 @@ public struct ChatView: View {
         self.sid = sid
         self.fleet = store
         self.autoSend = autoSend
+        self.client = client
         // The demo's transcript for this session, if this is the demo board. It
         // is read from the board's own store because that is what this screen is
         // already given, and it goes into the SAME `ChatStore` a real
@@ -80,6 +91,14 @@ public struct ChatView: View {
         ChatStore.canSend(card: card, sid: sid)
     }
 
+    /// Where the full log reads from. The demo's canned feed answers the same
+    /// `TranscriptSource` contract the client does — byte cursors, an exclusive
+    /// `before`, a real `has_more_before` — so a reviewer's scroll drives the
+    /// real paging code rather than a second reader written for them.
+    private var transcriptSource: any TranscriptSource {
+        fleet.demo?.transcripts ?? client
+    }
+
     public var body: some View {
         // `.background`, NOT `ZStack { canvas.ignoresSafeArea(); content }`.
         // A ZStack sizes to its largest child, so a canvas that ignores the safe
@@ -103,9 +122,41 @@ public struct ChatView: View {
                         }
                     }
                 }
+                // **The way to everything this drawer cannot show.** `/api/chat`
+                // is forty turns, newlines collapsed, 900 characters each, no
+                // tool traffic at all. The full log is the other reader — see
+                // `TranscriptView`.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showTranscript = true
+                    } label: {
+                        Image(systemName: "text.alignleft")
+                            .font(OrcFont.button)
+                            .foregroundStyle(Palette.statusFree)
+                    }
+                    .accessibilityLabel("full log")
+                }
+            }
+            .navigationDestination(isPresented: $showTranscript) {
+                TranscriptView(target: TranscriptTarget(worktree: worktree,
+                                                        account: account, sid: sid),
+                               source: transcriptSource)
             }
             .onReceive(ticker) { now = $0 }
             .task { chat.start() }
+            #if DEBUG
+            // `ORC_SCREEN=transcript:<wt>/<account>/<sid>` — the same seam as
+            // `chat:`, one push deeper. A simulator cannot be tapped and the
+            // house gate is "the screen was run and LOOKED at", so the full log
+            // gets one scriptable way in, through exactly the destination the
+            // toolbar button pushes.
+            .task {
+                guard let route = DebugRoute.fromEnvironment(),
+                      let wanted = route.transcriptTarget,
+                      wanted.sid == sid else { return }
+                showTranscript = true
+            }
+            #endif
             .task {
                 guard let autoSend, !autoSend.isEmpty else { return }
                 // Wait for the board, because `canSend` is decided from the card
@@ -190,7 +241,8 @@ public struct ChatView: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                     ForEach(chat.messages) { message in
                         ChatBubble(message: message,
-                                   sentFromHere: chat.wasSentFromHere(message))
+                                   sentFromHere: chat.wasSentFromHere(message),
+                                   openFullLog: { showTranscript = true })
                             .id(message.id)
                     }
                     ForEach(chat.outbox) { item in
@@ -358,6 +410,8 @@ struct ChatBubble: View {
     /// receipt in the app, and it is on the real transcript turn rather than on a
     /// local echo of it.
     var sentFromHere: Bool = false
+    /// Push the full log. The only honest answer to a turn the SERVER cut.
+    var openFullLog: () -> Void = {}
     @State private var expanded = false
 
     /// Agent turns collapse at six lines. `UX.md` §3.3.3 — a 900-character
@@ -380,17 +434,30 @@ struct ChatBubble: View {
                     .frame(maxWidth: .infinity,
                            alignment: message.isMine ? .trailing : .leading)
                 HStack(spacing: Space.sm) {
-                    if !message.isMine, !expanded, message.text.count > 240 {
+                    // **`show full` is a `lineLimit`, and it is offered only
+                    // where a `lineLimit` is the whole problem.** It used to be
+                    // offered beside `truncated by the server` too, where it was
+                    // a lie of omission: it un-clamps the clamp and fetches
+                    // nothing, so the characters the server dropped stayed
+                    // dropped and the button looked like it had produced them.
+                    if !message.isMine, !expanded, !message.serverTruncated,
+                       message.text.count > 240 {
                         Button("show full") { expanded = true }
                             .font(OrcFont.meta)
                             .foregroundStyle(Palette.statusFree)
                     }
                     if message.serverTruncated {
-                        // The server cut this at 900 characters. Without this the
-                        // reader thinks the agent trailed off mid-sentence.
+                        // The server cut this at 900 characters — inferred from
+                        // a trailing `…`, which is a guess `/api/chat` gives no
+                        // way to improve on. The BUTTON makes no claim: it opens
+                        // the full log, where `truncated` is a real field and
+                        // the whole turn is one fetch away.
                         Text("truncated by the server")
                             .font(OrcFont.meta)
                             .foregroundStyle(Palette.textDisabled)
+                        Button("open the full log", action: openFullLog)
+                            .font(OrcFont.meta)
+                            .foregroundStyle(Palette.statusFree)
                     }
                     if sentFromHere {
                         Text(verbatim: "✓✓ sent from this phone")

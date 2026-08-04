@@ -86,6 +86,25 @@ public actor OrchestraClient {
         try await send(.chat(account: account, sid: sid), to: profile, as: ChatTranscript.self)
     }
 
+    /// One page of the WHOLE transcript, walking backwards from `before`.
+    /// See `TranscriptSource` for why this is behind a protocol.
+    public func sessionMessages(account: String, sid: String,
+                                limit: Int = Endpoint.transcriptPageSize,
+                                before: Int? = nil,
+                                format: String = "raw") async throws -> TranscriptPage {
+        try await send(.sessionMessages(account: account, sid: sid, limit: limit,
+                                        before: before, format: format),
+                       to: profile, as: TranscriptPage.self)
+    }
+
+    /// One line of the transcript, uncapped to 256 KB — the `show all` fetch.
+    public func sessionEntry(account: String, sid: String, off: Int, i: Int? = nil,
+                             format: String = "raw") async throws -> TranscriptPage {
+        try await send(.sessionEntry(account: account, sid: sid, off: off, i: i,
+                                     format: format),
+                       to: profile, as: TranscriptPage.self)
+    }
+
     /// The branch map. A cache read on the server (30 s TTL); fetched on appear
     /// and pull-to-refresh only — never on a phone timer (§5.11).
     public func topology() async throws -> Topology {
