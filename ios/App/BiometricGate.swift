@@ -68,19 +68,23 @@ final class BiometricGate {
     ///    raise-to-wake or a banner puts the frontmost app through the phase
     ///    without anyone unlocking anything.
     ///
+    /// The rule itself is `BiometricPolicy.decide` — a value with no UIKit and
+    /// no clock, tested there. This supplies the two facts only UIKit knows:
     /// `applicationState` separates "a person is looking at us" from "we were
-    /// woken behind a lock screen"; `isProtectedDataAvailable` is false while the
-    /// device is locked, which is the second half a background wake does not
-    /// have. Failing this check **defers** — the phase stays `.locked`, never
-    /// `.failed`, so the next genuine activation prompts normally. That
-    /// distinction is the whole design: a refusal here must not look like a
-    /// cancel, or the user would face a dead gate needing a manual tap.
+    /// woken behind a lock screen", and `isProtectedDataAvailable` is false while
+    /// the device itself is locked, which is the half activation cannot answer.
+    ///
+    /// A refusal **defers** — the phase stays `.locked`, never `.failed` — so
+    /// the next genuine activation prompts normally.
     private var mayPrompt: Bool {
         #if canImport(UIKit)
-        UIApplication.shared.applicationState == .active
-            && UIApplication.shared.isProtectedDataAvailable
+        let decision = BiometricPolicy.decide(
+            needsUnlock: true,
+            appIsActive: UIApplication.shared.applicationState == .active,
+            protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
+        return decision == .prompt
         #else
-        true
+        return true
         #endif
     }
 
