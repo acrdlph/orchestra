@@ -181,7 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                              self.command, self.path,
                              origin=self.headers.get("Origin"),
                              host=self.headers.get("Host"),
-                             content_type=self.headers.get("Content-Type"))
+                             content_type=self.headers.get("Content-Type"),
+                             sec_fetch_site=self.headers.get("Sec-Fetch-Site"))
         if verdict.ok:
             # The device that just authenticated, for a route that ever needs
             # to know WHO is asking (API.md's `devices/self/*` will). Nothing
