@@ -21,16 +21,23 @@ public struct DemoPayload: Sendable {
     public let topology: Topology
     /// Keyed by `sid`, exactly as `/api/chat` is addressed.
     public let chats: [String: ChatTranscript]
+    /// The full transcript behind every one of those conversations, served
+    /// through the same `TranscriptSource` the real client implements — so the
+    /// demo's `⌗ full log` drives the real paging, folding and truncation code
+    /// rather than a second reader written for a reviewer.
+    public let transcripts: DemoTranscriptFeed
 
     public init(startedAt: Date, side: FleetSide, frame: StreamFrame,
                 limits: LimitsReport, topology: Topology,
-                chats: [String: ChatTranscript]) {
+                chats: [String: ChatTranscript],
+                transcripts: DemoTranscriptFeed) {
         self.startedAt = startedAt
         self.side = side
         self.frame = frame
         self.limits = limits
         self.topology = topology
         self.chats = chats
+        self.transcripts = transcripts
     }
 
     /// Decode the whole demo world against one clock.
@@ -44,7 +51,8 @@ public struct DemoPayload: Sendable {
                     frame: try DemoFleet.frame(now: now),
                     limits: try DemoLimits.report(now: now),
                     topology: try DemoTopology.topology(now: now),
-                    chats: try DemoChat.all(now: now))
+                    chats: try DemoChat.all(now: now),
+                    transcripts: try DemoTranscript.feed(now: now))
     }
 
     /// The app's door. Every payload is a compile-time literal and `swift test`

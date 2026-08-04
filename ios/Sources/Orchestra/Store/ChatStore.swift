@@ -112,9 +112,16 @@ public final class ChatStore {
     /// 15 s at rest. 5 s when something is in flight or was sent in the last two
     /// minutes — `UX.md` §3.3.3, and the reason is the receipt: a queued message
     /// appears in the transcript only when the agent's turn ends.
-    private static let restPeriod: TimeInterval = 15
-    private static let activePeriod: TimeInterval = 5
-    private static let activeWindow: TimeInterval = 120
+    ///
+    /// **`nonisolated` and no longer private, because the full-transcript reader
+    /// polls on these same three numbers** (`TranscriptRules.pollPeriod`). Two
+    /// screens over the same session, each with its own idea of how often to
+    /// ask, is two poll storms with one budget between them — and a third
+    /// cadence invented next door is the kind of drift nobody notices until the
+    /// server's rate limiter does.
+    nonisolated static let restPeriod: TimeInterval = 15
+    nonisolated static let activePeriod: TimeInterval = 5
+    nonisolated static let activeWindow: TimeInterval = 120
 
     public init(client: OrchestraClient, worktree: String, account: String, sid: String,
                 demo: ChatTranscript? = nil) {

@@ -26,6 +26,21 @@ public struct Endpoint: Sendable {
     /// and the server dedupes it rather than launching a second agent (API.md
     /// §4). A fresh user action mints a fresh key.
     public let idempotency: Idempotency?
+    /// Whether every query value must be percent-encoded down to the unreserved
+    /// set, rather than left to `URLComponents`.
+    ///
+    /// **`URLComponents.queryItems` does not encode `+`**, and the routes that
+    /// read their query with Python's `parse_qs` decode a literal `+` as a
+    /// space. A Claude-home label is user-chosen — `.claude-work stuff` is a
+    /// directory somebody can make — so an account that contains a `+` would
+    /// match nothing on the far side and the screen would show
+    /// `unknown account …` for an account that exists. Space is handled by
+    /// `URLComponents` (`%20`); `+` is not, which is why this is not "the
+    /// default is fine". It is opt-in rather than global because the OLDER
+    /// routes are read with `re.search` off the RAW path and never
+    /// percent-decoded at all (ios/README wire finding 22) — encoding for those
+    /// would break a case that works today.
+    public let strictQueryEncoding: Bool
 
     /// `Idempotency-Key` (a client UUID) and `Idempotency-Issued-At` (a float
     /// epoch, the moment the user committed), the pair API.md §4.1 requires on
@@ -41,7 +56,8 @@ public struct Endpoint: Sendable {
 
     public init(method: Method, path: String, query: [URLQueryItem] = [],
                 body: Data? = nil, timeout: TimeInterval, requiresToken: Bool,
-                idempotency: Idempotency? = nil) {
+                idempotency: Idempotency? = nil,
+                strictQueryEncoding: Bool = false) {
         self.method = method
         self.path = path
         self.query = query
@@ -49,6 +65,7 @@ public struct Endpoint: Sendable {
         self.timeout = timeout
         self.requiresToken = requiresToken
         self.idempotency = idempotency
+        self.strictQueryEncoding = strictQueryEncoding
     }
 
     /// A fresh idempotency identity for one user action. The key is minted here,
@@ -103,6 +120,61 @@ public struct Endpoint: Sendable {
                  query: [URLQueryItem(name: "account", value: account),
                          URLQueryItem(name: "sid", value: sid)],
                  timeout: 10, requiresToken: true)
+    }
+
+    // MARK: - The full transcript
+    //
+    // Two READS, and they are ordinary token-authenticated GETs: no
+    // `Sec-Fetch-Site`, no idempotency key, nothing that makes them acting
+    // requests. Like `/api/chat` they answer **200 for a refusal**, with the
+    // reason in `{"ok": false, "error": …}` — a status-line-only client renders
+    // an empty transcript for a nameable failure.
+
+    /// **The page size, and it is deliberately not the server's default 60.**
+    ///
+    /// A transcript entry here is not a chat turn: it can be a 4,000-character
+    /// tool result, and sixty of those is a quarter-megabyte page decoded on the
+    /// main thread of a phone for one screenful of reading. Thirty is two
+    /// comfortable screens of scroll-up at a time, and paging again costs one
+    /// bounded 512 KB window on the server (~4 ms measured against a 103 MB
+    /// transcript).
+    public static let transcriptPageSize = 30
+
+    /// `GET /api/v1/sessions/{sid}/messages` — one page of the whole transcript,
+    /// newest first, walking backwards by byte offset.
+    ///
+    /// `before` is a byte offset and is **exclusive**: the line at `before`
+    /// belongs to the page the caller already holds. Absent, the read ends at
+    /// the file's size, which is the newest page.
+    ///
+    /// The deadline is generous because the server may have to grow its window
+    /// past a single 1.2 MB line before it can answer at all.
+    public static func sessionMessages(account: String, sid: String,
+                                       limit: Int = transcriptPageSize,
+                                       before: Int? = nil,
+                                       format: String = "raw") -> Endpoint {
+        var query = [URLQueryItem(name: "account", value: account),
+                     URLQueryItem(name: "limit", value: String(limit)),
+                     URLQueryItem(name: "format", value: format)]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        return Endpoint(method: .get, path: "/api/v1/sessions/\(sid)/messages",
+                        query: query, timeout: 20, requiresToken: true,
+                        strictQueryEncoding: true)
+    }
+
+    /// `GET /api/v1/sessions/{sid}/messages/at/{off}` — one LINE, uncapped.
+    ///
+    /// The affordance behind `show all`. The cap here is 256 KB instead of
+    /// 4,000 characters, `?i=` picks one block out of the line, and `truncated`
+    /// still ships because a quarter-megabyte tool result is not hypothetical.
+    public static func sessionEntry(account: String, sid: String, off: Int,
+                                    i: Int? = nil, format: String = "raw") -> Endpoint {
+        var query = [URLQueryItem(name: "account", value: account),
+                     URLQueryItem(name: "format", value: format)]
+        if let i { query.append(URLQueryItem(name: "i", value: String(i))) }
+        return Endpoint(method: .get, path: "/api/v1/sessions/\(sid)/messages/at/\(off)",
+                        query: query, timeout: 25, requiresToken: true,
+                        strictQueryEncoding: true)
     }
 
     /// `GET /api/topology` — the branch map.
@@ -331,12 +403,30 @@ public struct Endpoint: Sendable {
                         timeout: 25)
     }
 
+    /// RFC 3986 unreserved only — `A-Z a-z 0-9 - . _ ~`. Everything else becomes
+    /// `%XX`, including space, `+`, `&`, `=`, `#` and every non-ASCII byte,
+    /// which is the only encoding `urllib.parse.parse_qs` reverses exactly.
+    static func encodeQueryComponent(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
     func urlRequest(base: URL, token: String?) throws -> URLRequest {
         guard var comps = URLComponents(url: base.appendingPathComponent(path),
                                         resolvingAgainstBaseURL: false) else {
             throw OrchestraError.decoding("could not build a URL for \(path)")
         }
-        if !query.isEmpty { comps.queryItems = query }
+        if !query.isEmpty {
+            if strictQueryEncoding {
+                comps.percentEncodedQueryItems = query.map {
+                    URLQueryItem(name: Self.encodeQueryComponent($0.name),
+                                 value: $0.value.map(Self.encodeQueryComponent))
+                }
+            } else {
+                comps.queryItems = query
+            }
+        }
         guard let url = comps.url else {
             throw OrchestraError.decoding("could not build a URL for \(path)")
         }

@@ -44,6 +44,13 @@ enum DebugRoute: Equatable {
     case map
     case worktree(String)
     case chat(worktree: String, account: String, sid: String)
+    /// The full transcript, one push beyond the chat drawer.
+    /// `ORC_SCREEN=transcript:<wt>/<account>/<sid>`, and — because the demo
+    /// fleet is the board a screenshot run has without a Mac —
+    /// `demo:transcript:…` through the same `demo:` prefix every other route
+    /// gets. It lands on the chat screen and presses the toolbar button there,
+    /// which is the only destination the full log has.
+    case transcript(worktree: String, account: String, sid: String)
     /// A `cclimits` slug — the key `/api/limits` uses, which is NOT always
     /// orchestra's own account label.
     case account(String)
@@ -110,13 +117,16 @@ enum DebugRoute: Equatable {
         case "wt", "worktree":
             guard parts.count == 2, !parts[1].isEmpty else { return nil }
             return .worktree(parts[1])
-        case "chat":
+        case "chat", "transcript":
             guard parts.count == 2 else { return nil }
             // `worktree/account/sid` — the sid is a UUID with dashes and the
             // account can be anything, so the split is bounded rather than
             // greedy and the sid keeps whatever is left.
             let fields = parts[1].split(separator: "/", maxSplits: 2).map(String.init)
             guard fields.count == 3 else { return nil }
+            if parts[0].lowercased() == "transcript" {
+                return .transcript(worktree: fields[0], account: fields[1], sid: fields[2])
+            }
             return .chat(worktree: fields[0], account: fields[1], sid: fields[2])
         default:
             return nil
@@ -126,7 +136,8 @@ enum DebugRoute: Equatable {
     /// Which tab the route lives on.
     var tab: Int {
         switch self {
-        case .demo, .fleet, .map, .worktree, .chat, .mission, .finish, .resume: 0
+        case .demo, .fleet, .map, .worktree, .chat, .transcript, .mission, .finish,
+             .resume: 0
         case .limits, .account: 1
         case .server, .notifications: 2
         }
@@ -138,6 +149,15 @@ enum DebugRoute: Equatable {
     /// What the Limits tab should push, if anything.
     var accountSlug: String? {
         if case .account(let slug) = self { return slug }
+        return nil
+    }
+
+    /// The session whose FULL LOG this launch asked for, read by `ChatView`
+    /// once it is on screen. Nil for every other route.
+    var transcriptTarget: TranscriptTarget? {
+        if case .transcript(let w, let a, let s) = self {
+            return TranscriptTarget(worktree: w, account: a, sid: s)
+        }
         return nil
     }
 
@@ -168,6 +188,10 @@ enum DebugRoute: Equatable {
         case .map: .map
         case .worktree(let name): .worktree(name)
         case .chat(let w, let a, let s): .chat(worktree: w, account: a, sid: s)
+        // The full log has exactly one door: the chat screen's toolbar button.
+        // So the seam lands on the chat screen and lets `ChatView` press it —
+        // a way to press the button, never a second way to navigate.
+        case .transcript(let w, let a, let s): .chat(worktree: w, account: a, sid: s)
         case .finish(let name): .worktree(name)
         case .resume(let w, _): .worktree(w)
         case .demo, .fleet, .limits, .server, .notifications, .account, .mission: nil
