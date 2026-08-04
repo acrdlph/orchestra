@@ -252,18 +252,23 @@ def _entry_messages(entry, off, pending, fmt, cap):
                 add("tool_use", _tool_input(b.get("input")), None,
                     {"name": name, "id": tid, "ok": None})
             elif kind == "tool_result":
-                tid = b.get("tool_use_id")
-                # `is_error` is the CLI's own word. A result whose `tool_use` is
-                # older than this read has no name — null, not a guess.
-                add("tool_result", _result_text(b), None,
+                tid, body = b.get("tool_use_id"), _result_text(b)
+                # `is_error` is the CLI's own word, and `<tool_use_error>` is
+                # the same fact written into the text — `parse_session_tail`
+                # matches the second one, so a result carrying only that must
+                # not read as a success here. A result whose `tool_use` is older
+                # than this read has no name: null, not a guess.
+                add("tool_result", body, None,
                     {"name": pending.get(tid), "id": tid,
-                     "ok": not b.get("is_error")})
+                     "ok": not b.get("is_error")
+                     and "<tool_use_error>" not in body})
             elif kind == "image":
                 add(role, "[image]", "image")
     elif isinstance(entry.get("content"), str):
         # `queue-operation`, and any `system` entry that carries its text at the
-        # top level rather than under `message`.
-        add(role, entry["content"], None)
+        # top level rather than under `message`. Both are the harness speaking,
+        # which `entry_why` only catches for the literal `system` type.
+        add(role, entry["content"], "system" if role == "system" else None)
     elif isinstance(entry.get("summary"), str):
         add("system", entry["summary"], "summary")
     elif isinstance(entry.get("attachment"), dict) and \
@@ -302,6 +307,36 @@ def _machine_why(role, text):
     if role != "user" or not isinstance(text, str):
         return None
     return "machine-text" if transcripts._MACHINE_TEXT.search(text) else None
+
+
+def _pending_before(fp, off):
+    """`tool_use id -> name` for the calls in one window below `off`.
+
+    `/messages/at/{off}` reads ONE line, and a `tool_result` never names its own
+    tool — the `tool_use` that did is an earlier line. The client already holds
+    the name (it tapped a message that carried it), but a route whose answer
+    depends on what the caller happens to remember is a route that lies to
+    curl. One bounded window back is what makes `tool.name` mean the same thing
+    on both routes; a call older than that window stays null, as it does on the
+    paged one.
+    """
+    lines, _ = _window(fp, off, WINDOW_BYTES)
+    names = {}
+    for _, raw in lines:
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_use" \
+                    and isinstance(b.get("id"), str):
+                names[b["id"]] = b.get("name") or "?"
+    return names
 
 
 def _expand(lines, fmt, cap):
@@ -488,6 +523,12 @@ def read_entry(account, sid, off, i=None, fmt=None):
         # this server can fix.
         return {"ok": False, "error": "no entry at that offset"}
     out = msgs[0][1]
+    if any(m["role"] == "tool_result" and m["tool"]["name"] is None
+           for m in out):
+        names = _pending_before(fp, off)
+        for m in out:
+            if m["role"] == "tool_result" and m["tool"]["name"] is None:
+                m["tool"]["name"] = names.get(m["tool"]["id"])
     if idx is not None:
         out = [m for m in out if m["i"] == idx]
         if not out:
