@@ -131,6 +131,18 @@ def schedule_resume(worktree, sid, account, model=None, delay_s=None,
         return {"ok": False, "message": "demo mode — nothing to schedule"}
     if not (worktree and sid and account):
         return {"ok": False, "message": "need worktree, sid and account"}
+    # `/api/chat` validates sid at the HTTP boundary (`[0-9a-fA-F-]+`); this is
+    # the OTHER boundary a sid crosses, and it had none. `_tmux_resume` reaches
+    # `glob(f"*/{sid}.jsonl")` with it, where a `*`, `?` or `[` matches an
+    # ARBITRARY transcript rather than the one armed, and a `/` walks out of the
+    # project dir. A real session id is a hex UUID; this allows alphanumerics and
+    # dashes (a superset of /api/chat's hex — identical for every real sid, and
+    # it keeps this server's own `s1`/`s-alpha` sids valid) and refuses anything
+    # carrying a glob or path metacharacter before it can reach the glob.
+    if not re.fullmatch(r"[0-9A-Za-z-]+", str(sid)):
+        return {"ok": False, "message": "that sid is not a session id this "
+                "server would have minted; it must be letters, digits and "
+                "dashes only"}
     now = time.time()
     try:
         delay = float(delay_s if delay_s is not None

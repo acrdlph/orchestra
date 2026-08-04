@@ -56,6 +56,21 @@ IDEM_TTL_S = 3600.0        # evict a record this many seconds after its last tou
 IDEM_EXPIRE_S = 900.0      # issued_at older than this -> reject "expired"
 IN_FLIGHT_RETRY_S = 1      # Retry-After seconds on operation_in_flight
 
+# A hard count cap ON TOP of the TTL. The TTL alone bounds a steady stream, but
+# a burst of distinct keys inside one TTL window has nothing stopping it, and
+# `_save` rewrites the WHOLE file on every begin/complete — so an unbounded
+# record set is also an unbounded write. `_evict` drops the oldest by last-touch
+# down to this cap. Each record carries a stored response body, so this is a few
+# MB, not a few bytes; sized to swallow any realistic double-tap storm.
+IDEM_MAX_RECORDS = 4096
+
+# The longest Idempotency-Key this store will accept. The web board mints
+# `crypto.randomUUID()` (36 chars) and the Swift client a UUID, so 128 is
+# generous headroom for any opaque token a real client sends — and the cap is
+# what stops an attacker's unbounded header becoming an unbounded dict key in a
+# file that is rewritten whole every time. See `key_acceptable`.
+IDEM_MAX_KEY_LEN = 128
+
 # The mutation routes idempotency guards. A read/pair/hook route is never gated:
 # it has no side effect a retry could double. `server.do_POST` consults this so
 # the set of protected routes lives in one place.
@@ -84,6 +99,39 @@ def fingerprint(method, route, payload):
     `json.loads`d, so it is always JSON-serialisable."""
     canon = json.dumps(payload, sort_keys=True)
     return hashlib.sha256((canon + method + route).encode()).hexdigest()
+
+
+def key_acceptable(key):
+    """Is this Idempotency-Key one we will store? A non-empty string no longer
+    than `IDEM_MAX_KEY_LEN`. A missing key never reaches here (the caller only
+    gates keyed mutations); an over-long one is refused rather than stored, so a
+    header cannot become an unbounded key in a whole-file-rewrite store."""
+    return isinstance(key, str) and 0 < len(key) <= IDEM_MAX_KEY_LEN
+
+
+def _scope(device):
+    """The identity a key is namespaced under, so one device cannot squat
+    another's key nor replay its stored response.
+
+    A dict is the authenticated device (`server.Handler.device`, set from the
+    token); its `id` is the namespace. Anything falsy is the trusted local board
+    (loopback), whose keys live UN-prefixed as the base namespace — and because a
+    REMOTE device is always a dict here, it can never mint a base-namespace key,
+    so a remote key never collides with a loopback key or with another device's.
+    """
+    if isinstance(device, dict):
+        return device.get("id") or None
+    if isinstance(device, str) and device:
+        return device
+    return None
+
+
+def _skey(device, key):
+    """The record key: the raw key for loopback, `<device-id>\\x00<key>` for a
+    device. The NUL cannot occur in a client-minted key, so the two namespaces
+    cannot be forged into each other."""
+    scope = _scope(device)
+    return f"{scope}\x00{key}" if scope else key
 
 
 def _load():
@@ -144,9 +192,17 @@ def _evict(now):
              if now - float(r.get("ts", now)) > IDEM_TTL_S]
     for k in stale:
         del _records[k]
+    # …and a hard count cap on top of the TTL: a burst of distinct keys inside
+    # one TTL window could grow the store — and its whole-file rewrite —
+    # without bound, so evict the oldest by last touch down to the cap. LRU on
+    # the same `ts` the TTL reads.
+    if len(_records) > IDEM_MAX_RECORDS:
+        oldest = sorted(_records, key=lambda k: float(_records[k].get("ts", 0)))
+        for k in oldest[:len(_records) - IDEM_MAX_RECORDS]:
+            del _records[k]
 
 
-def begin(key, method, route, payload, issued_at, now):
+def begin(key, method, route, payload, issued_at, now, device=None):
     """Reserve `key` write-ahead, or say why the caller must not run the handler.
 
     Returns one of, evaluated in this order (ARCHITECTURE §5.6):
@@ -163,6 +219,18 @@ def begin(key, method, route, payload, issued_at, now):
     The whole check-and-reserve is one critical section, so two threads racing
     the same key cannot both proceed. The lock is released before this returns —
     the handler runs without it."""
+    if not key_acceptable(key):
+        # An over-long or empty key is refused rather than stored — running the
+        # mutation keyless instead would strip exactly the retry protection the
+        # client asked for, and storing it would put an unbounded header into a
+        # whole-file-rewrite store.
+        return ("reject", (400, "idempotency_key_invalid",
+                "the Idempotency-Key must be a short opaque token no longer "
+                f"than {IDEM_MAX_KEY_LEN} characters", {}))
+    # Namespaced by the caller's device so one device cannot squat another's key
+    # or replay its stored response; the fingerprint stays device-free, so the
+    # SAME device replays its own identical body.
+    skey = _skey(device, key)
     fp = fingerprint(method, route, payload)
     with _lock:
         _load()
@@ -181,14 +249,14 @@ def begin(key, method, route, payload, issued_at, now):
             except (TypeError, ValueError):
                 pass           # an unparseable issued_at cannot expire anything
 
-        rec = _records.get(key)
+        rec = _records.get(skey)
         if rec is None:
             # First sighting. Persist the in_flight reservation BEFORE the caller
             # touches anything — this is the write that a restart-mid-op depends
             # on being on disk.
-            _records[key] = {"boot": BOOT_ID, "issued_at": issued_at,
-                             "fingerprint": fp, "done": False,
-                             "status": None, "body": None, "ts": now}
+            _records[skey] = {"boot": BOOT_ID, "issued_at": issued_at,
+                              "fingerprint": fp, "done": False,
+                              "status": None, "body": None, "ts": now}
             _save()
             return ("proceed", None)
 
@@ -222,25 +290,29 @@ def begin(key, method, route, payload, issued_at, now):
                 {}))
 
 
-def complete(key, status, body):
+def complete(key, status, body, device=None):
     """Settle `key` with the response the handler produced (or its failure).
 
     Called on BOTH the success and the exception path — there is no abandon: a
     500 stored here is what a retry replays instead of re-running the side
     effect. First completion wins: once a `done` record exists it is left alone,
     so a response whose transport failed AFTER the side effect succeeded keeps
-    its stored success rather than being overwritten by the transport error."""
+    its stored success rather than being overwritten by the transport error.
+
+    `device` must be the same identity passed to `begin`, or the settle would
+    land on a different namespace's record than the one it reserved."""
     now = time.time()
+    skey = _skey(device, key)
     with _lock:
         _load()
-        rec = _records.get(key)
+        rec = _records.get(skey)
         if rec is None:
             # begin() always writes the record first, so this is defensive: a
             # completion for a key we never reserved is still recorded done, so
             # a later retry replays it rather than re-executing.
-            rec = _records[key] = {"boot": BOOT_ID, "issued_at": None,
-                                   "fingerprint": None, "done": False,
-                                   "status": None, "body": None, "ts": now}
+            rec = _records[skey] = {"boot": BOOT_ID, "issued_at": None,
+                                    "fingerprint": None, "done": False,
+                                    "status": None, "body": None, "ts": now}
         if rec.get("done"):
             return             # first completion wins
         rec.update(done=True, status=status, body=body, ts=now)

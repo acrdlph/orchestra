@@ -550,6 +550,19 @@ class Response:
 
 # ------------------------------------------------------------------ the POST
 
+def _cfg_value(value):
+    """One value going into a `curl --config` line, made safe to interpolate.
+
+    The config is one directive PER LINE, so a CR or LF smuggled into an
+    interpolated value would start a SECOND directive — `output = <path>` is an
+    arbitrary file write, `data-binary = @<path>` an arbitrary read. Every value
+    the config is built from is safe today (a JWT, a bundle id, a device token,
+    server-generated temp paths), so this changes nothing now; it is the standing
+    guard that stops a future caller turning a header into a curl option. All
+    interpolation into the config goes through here for exactly that reason."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def post(device_token, payload, creds, jwt, environment=None,
          push_type="alert", priority=10, expiration=None, collapse_id=None,
          timeout=POST_TIMEOUT_S):
@@ -596,13 +609,15 @@ def post(device_token, payload, creds, jwt, environment=None,
         with open(bodyp, "wb") as f:
             f.write(body)
 
+        # every interpolated value goes through `_cfg_value` (CR/LF stripped) so
+        # none of them can inject a second directive; ints are already safe.
         lines = [
-            f'url = "https://{host}/3/device/{device_token}"',
+            f'url = "https://{_cfg_value(host)}/3/device/{_cfg_value(device_token)}"',
             'request = "POST"',
             "http2",
-            f'header = "authorization: bearer {jwt}"',
-            f'header = "apns-topic: {creds.topic}"',
-            f'header = "apns-push-type: {push_type}"',
+            f'header = "authorization: bearer {_cfg_value(jwt)}"',
+            f'header = "apns-topic: {_cfg_value(creds.topic)}"',
+            f'header = "apns-push-type: {_cfg_value(push_type)}"',
             f'header = "apns-priority: {int(priority)}"',
         ]
         if expiration is not None:
@@ -612,10 +627,10 @@ def post(device_token, payload, creds, jwt, environment=None,
             # and losing the tail of one costs a superseded notification. Losing
             # the NOTIFICATION because its grouping key was long is worse.
             cid = str(collapse_id).encode("utf-8")[:64].decode("utf-8", "ignore")
-            lines.append(f'header = "apns-collapse-id: {cid}"')
-        lines += [f'data-binary = "@{bodyp}"',
-                  f'output = "{outp}"',
-                  f'dump-header = "{hdrp}"',
+            lines.append(f'header = "apns-collapse-id: {_cfg_value(cid)}"')
+        lines += [f'data-binary = "@{_cfg_value(bodyp)}"',
+                  f'output = "{_cfg_value(outp)}"',
+                  f'dump-header = "{_cfg_value(hdrp)}"',
                   "silent", "show-error",
                   f'max-time = {int(timeout)}',
                   'write-out = "%{http_code} %{http_version}"']

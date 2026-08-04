@@ -124,6 +124,23 @@ NOT_JSON = "content_type_required"
 # request is simply not addressed to this server.
 HOST_NOT_ALLOWED = "host_not_allowed"
 
+# A GET that ACTS reached this server cross-site. `same_origin` cannot stop it:
+# a tag-initiated GET (`<img>`, `<script>`) sends no `Origin`, and absent is
+# same-origin per fetch, so the origin guard waves it through. `Sec-Fetch-Site`
+# is the signal that does not lie — the browser sets it (`cross-site` for a tag
+# on another page) and page JS cannot, because it is a forbidden header. 403,
+# like CROSS_ORIGIN: the request is simply not one of this server's own pages.
+CROSS_SITE = "cross_site_forbidden"
+
+# The `Sec-Fetch-Site` values a same-origin request carries. A modern browser
+# stamps `same-origin`/`same-site` on a fetch from our own page and `none` on a
+# user-initiated navigation; a cross-site `<img>`/`<script>` GET is `cross-site`
+# and refused. ABSENT is an old or non-browser client (a `curl`, the phone),
+# which reached the guard only via loopback trust or a valid token — so an
+# absent header is allowed, and only a header that is PRESENT and not one of
+# these is a cross-site tag. See `_acting_get` and `check`'s `browser_guards`.
+SEC_FETCH_SAME = frozenset({"same-origin", "same-site", "none"})
+
 # The media type every mutation must announce. This is the CSRF guard, and it
 # is two lines because of how the browser's rules happen to fall.
 #
@@ -236,6 +253,12 @@ ADMIN_ONLY = "admin_local_only"
 # only ever reads leaves no evidence here; that is a known gap, and the honest
 # way to close it is a counter in `meta`, not a log nobody can grep.
 SIDE_EFFECT_GETS = ("/api/focus",)
+
+# The acting GETs that ALSO earn an audit line. `/api/focus` acts and is logged
+# already; `/api/events` acts (holds an SSE slot) and is now logged on open. A
+# `refresh=1` limits fetch acts too but stays UNaudited (volume), so it is in
+# `_acting_get` below but not here.
+ACTING_GET_AUDITED = SIDE_EFFECT_GETS + ("/api/events",)
 
 # …and the one mutation that is NOT logged, which is the same argument running
 # the other way.
@@ -917,7 +940,37 @@ def audited(method, path):
     # is the inventory of every credential to this machine, which is a very
     # different thing to read than a status page — and unlike `/api/state`, it
     # is not polled, so logging it buries nothing.
-    return clean.startswith(SIDE_EFFECT_GETS) or _under_admin(clean)
+    #
+    # `/api/events` is audited on OPEN (added with the Sec-Fetch guard): a stream
+    # is not a read that returns and forgets — it takes an SSE slot for its whole
+    # life (32 exhaust `sse_max_subscribers`), which is a side effect worth one
+    # line. It is dispatched once, at open, so this logs one line per stream, not
+    # per keepalive. A `refresh=1` limits fetch is an acting GET too, but it is
+    # NOT audited: it is a user clicking refresh, and logging it is the volume the
+    # comment above declines for reads.
+    return clean.startswith(ACTING_GET_AUDITED) or _under_admin(clean)
+
+
+def _acting_get(method, path):
+    """Is this a GET that ACTS rather than reads — the CSRF surface `same_origin`
+    cannot cover?
+
+    `/api/focus` opens a terminal attached to a fleet agent (runs osascript);
+    `/api/events` holds an SSE slot (32 exhaust `sse_max_subscribers`, and it is
+    dispatched OUTSIDE the door's later guards by its early return in `do_GET`);
+    `/api/limits?refresh=1` shells out to cclimits. A tag on another page can
+    issue any of them as a GET with NO `Origin`, which `same_origin` treats as
+    same-origin — so these three additionally demand a `Sec-Fetch-Site` a page
+    cannot forge (see `SEC_FETCH_SAME` and `check`). A plain `/api/limits` read
+    is not one of these; only the `refresh=1` fetch acts."""
+    if method != "GET":
+        return False
+    clean = path.split("?", 1)[0]
+    if clean.startswith(SIDE_EFFECT_GETS) or clean.startswith("/api/events"):
+        return True
+    # mirror `do_GET`'s own refresh test (`"refresh=1" in self.path`) so the
+    # guard and the route agree on which limits fetch actually spawns cclimits.
+    return clean.startswith("/api/limits") and "refresh=1" in path
 
 
 # The one carve-out from the admin surface: a device's OWN self-service routes.
@@ -942,7 +995,19 @@ def _under_admin(path):
     `/api/v1/devices/self/*` is explicitly NOT admin — see `SELF_SUBTREE`. The
     check is segment-exact for the same reason the ADMIN check is: a substring
     test would let `/api/v1/devices/selfish` masquerade as self-service.
+
+    A path that is not in normal form is admin-required BEFORE the self carve-out
+    is even considered — the twin of the `/api/v1/devicesX` incident. This
+    function decides on the RAW request path (never a normalised one), so
+    `/api/v1/devices/self/../aabbccdd/revoke` would match the SELF_SUBTREE prefix
+    and be classified self-service, yet it ADDRESSES another device's revoke. A
+    `..`, a `//`, or a percent-encoded slash (`%2f`) is never in a legitimate
+    route here, so treating any of them as admin (fail safe — a refusal, never a
+    self grant) costs a real caller nothing. Latent today (`do_POST` exact-
+    matches the revoke route), pinned so it cannot wake up behind a future route.
     """
+    if ".." in path or "//" in path or "%2f" in path.lower():
+        return True
     if path == SELF_SUBTREE or path.startswith(SELF_SUBTREE + "/"):
         return False
     return any(path == p or path.startswith(p + "/") for p in ADMIN)
@@ -1101,7 +1166,7 @@ def _forget_allowed_hosts():
 
 
 def check(peer, header, method, path, now=None, origin=None, host=None,
-          content_type=None):
+          content_type=None, sec_fetch_site=None):
     """THE check. One call, one answer, and it has side effects on purpose.
 
     `server.Handler.parse_request` is its only caller inside the package, which
@@ -1200,6 +1265,24 @@ def check(peer, header, method, path, now=None, origin=None, host=None,
                           f"this server does not answer to Host '{host}'; a "
                           f"request must address it by an address it is bound "
                           f"to, not through a proxy that rewrites Host", spend=0)
+        if _acting_get(method, path):
+            # The GET half of the cross-site guard. `same_origin` above lets a
+            # tag-initiated GET through — it carries no `Origin` — so for the
+            # GETs that ACT (open a terminal, hold a stream, spawn cclimits) we
+            # additionally require a `Sec-Fetch-Site` a page cannot set. PRESENT
+            # and not same-origin is a cross-site `<img>`/`<script>` (or a value
+            # we do not recognise): refuse. ABSENT means an old or non-browser
+            # client, and it reached here only through loopback trust or a valid
+            # token — so it is allowed, which is exactly the SSE-open-from-the-
+            # -board (same-origin, has the header) and the bearer-token curl (no
+            # header, has the token) the fix must not break. `spend=0`: this is a
+            # page misbehaving, not a credential being guessed.
+            sfs = (sec_fetch_site or "").strip().lower()
+            if sfs and sfs not in SEC_FETCH_SAME:
+                return refuse(403, CROSS_SITE,
+                              f"'{path.split('?', 1)[0]}' acts on your fleet and "
+                              f"was reached cross-site; this server runs it only "
+                              f"for its own pages", spend=0)
         if method != "GET" and \
                 (content_type or "").split(";")[0].strip().lower() != JSON_TYPE:
             # See JSON_TYPE: the CSRF guard, not a nicety about media types.

@@ -1757,6 +1757,27 @@ class TestScheduleResume(ResumeGuard):
         self.assertEqual(fb._resumes["wt|s1"]["status"], "pending")
 
 
+class TestScheduleResumeValidatesSid(ResumeGuard):
+    """L3: `schedule_resume` had no sid charset check, unlike `/api/chat`. The
+    sid reaches `_tmux_resume`'s `glob(f"*/{sid}.jsonl")`, where a glob or path
+    metacharacter matches an ARBITRARY transcript instead of the one armed."""
+
+    def test_a_glob_metacharacter_sid_is_refused(self):
+        import time as _t
+        reset = _t.time() + 1000
+        for bad in ("*", "a*b", "?", "s[1]", "../secret", "a/b", "a.b"):
+            out = fb.schedule_resume("wt", bad, "account2", resets_at=reset)
+            self.assertFalse(out["ok"], bad)
+            self.assertNotIn(f"wt|{bad}", fb._resumes)
+
+    def test_a_real_session_id_is_accepted(self):
+        import time as _t
+        reset = _t.time() + 1000
+        sid = "8b1e5f2a-3c47-4d19-9e02-71ac5f0b2d38"     # a hex UUID, a real sid
+        self.assertTrue(fb.schedule_resume("wt", sid, "account2",
+                                           resets_at=reset)["ok"])
+
+
 class TestLimitActiveUntil(ResumeGuard):
     """Fire-time verification: a schedule must not type at an agent whose
     account is still exhausted — and must not be fooled by a stale cache
