@@ -150,11 +150,26 @@ struct RulesTests {
         #expect(ErrnoCause.classify(bare) == .serverStopped)
     }
 
-    @Test func atsRefusalIsABuildProblemAndSaysSo() {
+    /// An ATS refusal used to be only a build problem. Since the app started
+    /// reaching Macs by their MagicDNS name — and dropped the raw-tailnet-IP
+    /// exception, which could only ever match one person's address — the common
+    /// case is a device paired BEFORE that change, still holding a `100.x`
+    /// literal. That one the user can fix, so the guidance must lead with it and
+    /// still keep the build pointer for the case where it really is the plist.
+    @Test func anAtsRefusalTellsTheUserToPairAgainBeforeBlamingTheBuild() {
         let ats = NSError(domain: NSURLErrorDomain,
                           code: NSURLErrorAppTransportSecurityRequiresSecureConnection)
         #expect(ErrnoCause.classify(ats) == .transportBlocked)
-        #expect(OrchestraError.transportBlocked.guidance.contains("Info.plist"))
+        let guidance = OrchestraError.transportBlocked.guidance
+        #expect(guidance.contains("pair"))
+        // and it must not send the user to the Mac, which is not the problem
+        #expect(guidance.contains("Nothing on the Mac is wrong"))
+        // the developer's cause stays reachable, after the actionable one
+        #expect(guidance.contains("Info.plist"))
+        let pairAt = guidance.range(of: "pair")?.lowerBound
+        let plistAt = guidance.range(of: "Info.plist")?.lowerBound
+        #expect(pairAt != nil && plistAt != nil && pairAt! < plistAt!,
+                "the sentence the user can act on comes first")
     }
 
     @Test func cancellationIsNeverShownToTheUser() {

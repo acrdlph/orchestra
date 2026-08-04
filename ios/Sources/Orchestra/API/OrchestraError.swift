@@ -168,9 +168,20 @@ extension OrchestraError {
         case .offline:
             "This phone has no network path. Turn on Wi-Fi or cellular."
         case .transportBlocked:
-            "App Transport Security refused a plain-HTTP load before anything left "
-            + "the phone. This build's Info.plist needs an NSExceptionDomains entry "
-            + "for that host — see ADR 0013. Nothing on the Mac is wrong."
+            // The likely cause CHANGED on 2026-08-04, so the actionable sentence
+            // comes first now. This build reaches a Mac by its MagicDNS name
+            // (the one `ts.net` exception a store-distributed binary can carry);
+            // it dropped the raw-tailnet-IP entry, which could only ever have
+            // been one person's address. So the common case is no longer a
+            // missing plist entry — it is a device paired before the change,
+            // still holding a `100.x` literal ATS will not load. That one is
+            // fixable from the phone, and the plist note stays for the case
+            // where it genuinely is the build.
+            "This build reaches your Mac by its Tailscale name, not by a raw "
+            + "100.x address — a device paired before that change needs to pair "
+            + "again to pick the name up. Nothing on the Mac is wrong. (If the "
+            + "host really has no name, that host needs an Info.plist "
+            + "NSExceptionDomains entry — ADR 0013.)"
         case .tailnetDown:
             "Open Tailscale on this phone and connect. orchestra cannot start it for you."
         case .macUnreachable:
