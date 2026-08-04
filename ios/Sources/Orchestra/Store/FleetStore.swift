@@ -299,6 +299,36 @@ public final class FleetStore {
         link = .idle
     }
 
+    /// **A credential changed — the one thing allowed to clear the auth latch.**
+    ///
+    /// `.unauthorized` is deliberately a dead end: `streamLoop` returns on it
+    /// ("a token problem is not retried"), `mayFetchSide` refuses to poll on it,
+    /// and `stop()` preserves it. That is what stops a revoked phone spending the
+    /// server's whole per-IP auth budget once a second — a defect this app
+    /// already had, and fixed.
+    ///
+    /// But the latch outlived the credential. `streamLoop` RETURNS without
+    /// nilling `streamTask`, so the task object stays non-nil and `start()` only
+    /// opens a stream `if streamTask == nil` — so after unpairing and pairing
+    /// again, a brand-new valid token met a stream that would not reopen and a
+    /// pump that would not poll. The board sat on *"this device isn't paired"*
+    /// while the Mac listed it as paired, until the user pressed retry, which is
+    /// `force` and the one path that bypasses the guard. Found on a real phone,
+    /// one scan after a re-pair.
+    ///
+    /// Guarded on the latch, so it is inert on a healthy link: this is called
+    /// from the paired view's `.task`, which runs on every appearance — including
+    /// every Face ID unlock — and tearing a live stream down there would cost a
+    /// reconnect for nothing.
+    public func credentialsChanged() {
+        guard case .unauthorized = link else { return }
+        streamTask?.cancel()
+        streamTask = nil
+        pumpTask?.cancel()
+        pumpTask = nil
+        link = .idle
+    }
+
     /// Foregrounding. The stream is re-opened with the version still held, so a
     /// short absence costs one delta and a long one costs one snapshot — the
     /// server decides which, from the cursor, and the client never has to know
@@ -496,7 +526,11 @@ public final class FleetStore {
         phase = .cold
     }
 
-    private func note(_ error: OrchestraError) {
+    /// Internal rather than private, and for the reason `beginSideFetch` is:
+    /// the auth LATCH and the thing that clears it are a pair, and a pair that
+    /// only the network can put into its dangerous state is a pair no test can
+    /// hold. `@testable` drives a 401 through exactly the path a real one takes.
+    func note(_ error: OrchestraError) {
         lastError = error
         if case .unauthorized = error {
             link = .unauthorized

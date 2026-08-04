@@ -252,3 +252,53 @@ struct FixesPushStoreTests {
         #expect(reloaded.settings.isOn(.yourTurn) == false)
     }
 }
+
+/// **The auth latch outliving the credential.** Reported from a real phone: after
+/// unpairing and scanning a fresh code the Mac said *paired* and listed the
+/// device, while the phone sat on *"this device isn't paired"* — and pressing
+/// retry (which is `force`, the one path that bypasses the guard) connected
+/// immediately.
+///
+/// `.unauthorized` is deliberately a dead end so a revoked phone cannot spend the
+/// server's per-IP auth budget once a second. The defect was that the dead end
+/// outlived the token that caused it: `streamLoop` returns without nilling
+/// `streamTask`, and `start()` only opens a stream `if streamTask == nil`.
+@MainActor
+struct CredentialLatchTests {
+
+    static func store() -> FleetStore { FleetStore(client: OrchestraClient()) }
+
+    @Test func aTokenFailureLatchesAndSurvivesStopAndStart() {
+        let store = Self.store()
+        store.note(.unauthorized(nil))
+        #expect(store.link == .unauthorized)
+        // stop() preserves it on purpose — backgrounding must not forgive a
+        // revoked token.
+        store.stop()
+        #expect(store.link == .unauthorized)
+        // and start() cannot talk its way out of it either
+        store.start()
+        #expect(store.link == .unauthorized)
+    }
+
+    @Test func aNewCredentialClearsTheLatch() {
+        let store = Self.store()
+        store.note(.unauthorized(nil))
+        #expect(store.link == .unauthorized)
+        store.credentialsChanged()
+        #expect(store.link == .idle,
+                "a fresh token must not meet the dead end left by the old one")
+    }
+
+    /// It is called from the paired view's `.task`, which runs on every
+    /// appearance — including every Face ID unlock. Tearing a healthy stream
+    /// down there would cost a reconnect for nothing.
+    @Test func itIsInertOnAHealthyLink() throws {
+        let store = Self.store()
+        store.apply(try FixesStoreTests.board())
+        let before = store.link
+        store.credentialsChanged()
+        #expect(store.link == before)
+        #expect(store.state != nil, "a healthy board is not cleared")
+    }
+}

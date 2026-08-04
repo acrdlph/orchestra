@@ -247,6 +247,12 @@ struct RootView: View {
             // too keeps the push registration from being armed for a device that
             // is not paired.
             guard !model.isDemo else { return }
+            // This view appears the moment a token exists — including the moment
+            // a NEW one does. Clear a stale auth latch first, or `start()` finds
+            // a returned-but-non-nil stream task and opens nothing, and the board
+            // sits on "this device isn't paired" holding a perfectly good token.
+            // Inert on a healthy link, so the Face ID unlock path pays nothing.
+            model.fleet.credentialsChanged()
             model.fleet.start()
             model.ensurePushStarted()
         }

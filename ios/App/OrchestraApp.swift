@@ -275,6 +275,12 @@ final class AppModel {
 
     func unpair() async {
         await pairing.unpair()
+        // The transport keeps its `.unauthorized` latch across an unpair —
+        // deliberately, since a revoked token must not be retried. But the very
+        // next thing after an unpair is usually a fresh pair, and the latch
+        // would silence a brand-new valid token. Clearing it here is inert
+        // unless it is actually latched.
+        fleet.credentialsChanged()
     }
 
     /// What the device calls itself, which is what shows up in the Mac's
