@@ -115,8 +115,12 @@ struct PairingScreen: View {
 
     private var manualForm: some View {
         VStack(alignment: .leading, spacing: Space.md) {
+            // The desktop's manual card advertises the MagicDNS name now
+            // (pairing.advertised), not the raw tailnet IP — and on a store
+            // build the IP would not load (ATS covers ts.net, not a literal).
+            // So the placeholder hints the shape a user should type.
             field("MAC ADDRESS", text: $host, focus: .host,
-                  placeholder: "100.113.110.31", keyboard: .URL)
+                  placeholder: "my-mac.tailnet.ts.net", keyboard: .URL)
             field("PORT", text: $port, focus: .port,
                   placeholder: "4242", keyboard: .numberPad)
             field("PAIRING CODE", text: $code, focus: .code,
