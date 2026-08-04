@@ -122,6 +122,25 @@ struct RootView: View {
                 break
             }
         }
+        // The two moments a DEFERRED prompt becomes valid. `BiometricGate`
+        // refuses to evaluate unless the app is genuinely active and the device
+        // is unlocked, because `.active` alone is delivered behind a lock screen
+        // and `LockView`'s `.task` runs while backgrounded — either one used to
+        // put a passcode sheet on a locked phone. A refusal leaves the gate
+        // `.locked`, so these two are what pick it back up: UIKit's own
+        // activation notification (which SwiftUI's `scenePhase` does not always
+        // repeat once it already believes we are active), and the moment the
+        // device is unlocked and protected data comes back.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification)) { _ in
+            guard model.pairing.isPaired else { return }
+            Task { await gate.authenticateIfNeeded() }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            guard model.pairing.isPaired else { return }
+            Task { await gate.authenticateIfNeeded() }
+        }
         .onOpenURL { url in
             // The pairing QR is `orc://p?h=…&p=…&c=…`, so scanning it with the
             // SYSTEM camera opens the app straight here. Same ticket, same

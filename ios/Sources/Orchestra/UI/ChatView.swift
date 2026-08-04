@@ -255,12 +255,16 @@ public struct ChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                         .stroke(Palette.control, lineWidth: 1))
-                    // Return inserts a space, exactly as the far side would.
-                    .onChange(of: draft) { _, new in
-                        if new.contains(where: \.isNewline) {
-                            draft = new.replacingOccurrences(of: "\n", with: " ")
-                        }
-                    }
+                    // **The draft is never rewritten while you type.** It used to
+                    // collapse newlines here, on every change, so that the field
+                    // showed what the far side would receive. That cost more than
+                    // it bought: assigning a `TextField`'s bound String from
+                    // outside moves the caret to the END of the text, so pressing
+                    // Return mid-message threw the cursor to the bottom and a
+                    // line break silently became a jump. The collapse is not lost
+                    // — `ChatStore.send` applies `WireText.collapsed` to whatever
+                    // is typed, which is the only place it has to happen, and the
+                    // footnote below says so before you press send.
                 Button {
                     let text = draft
                     draft = ""

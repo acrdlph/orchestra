@@ -1,6 +1,9 @@
 import Foundation
 import LocalAuthentication
 import Observation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The device-owner check that stands in front of the paired app.
 ///
@@ -51,10 +54,43 @@ final class BiometricGate {
         await authenticate()
     }
 
+    /// **Never prompt at somebody who is not looking at the app.**
+    ///
+    /// Found on a real phone: the screen was locked and orchestra put up *"Enter
+    /// iPhone passcode for Orchestra"* by itself. Two paths lead there and both
+    /// end in `evaluatePolicy`, which will happily draw over the lock screen:
+    ///
+    /// 1. `lock()` runs on the `.background` transition, so `LockView` is swapped
+    ///    in *while the app is already backgrounded* — and SwiftUI runs its
+    ///    `.task` (the app switcher needs the hierarchy rendered), which called
+    ///    `authenticateIfNeeded` from behind a locked screen.
+    /// 2. `.active` is delivered while the device itself is still locked — a
+    ///    raise-to-wake or a banner puts the frontmost app through the phase
+    ///    without anyone unlocking anything.
+    ///
+    /// `applicationState` separates "a person is looking at us" from "we were
+    /// woken behind a lock screen"; `isProtectedDataAvailable` is false while the
+    /// device is locked, which is the second half a background wake does not
+    /// have. Failing this check **defers** — the phase stays `.locked`, never
+    /// `.failed`, so the next genuine activation prompts normally. That
+    /// distinction is the whole design: a refusal here must not look like a
+    /// cancel, or the user would face a dead gate needing a manual tap.
+    private var mayPrompt: Bool {
+        #if canImport(UIKit)
+        UIApplication.shared.applicationState == .active
+            && UIApplication.shared.isProtectedDataAvailable
+        #else
+        true
+        #endif
+    }
+
     /// Force an evaluation — the explicit "Unlock" / "Try again" button, and the
     /// engine behind `authenticateIfNeeded`.
     func authenticate() async {
         guard phase != .unlocked, phase != .authenticating else { return }
+        // Before `.authenticating`, deliberately: a deferral must leave the gate
+        // exactly as it found it.
+        guard mayPrompt else { return }
         let gen = generation
         phase = .authenticating
 
