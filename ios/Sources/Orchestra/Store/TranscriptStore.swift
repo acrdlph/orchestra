@@ -412,6 +412,10 @@ public final class TranscriptStore {
     /// * `tools` — every folded tool block, opened
     /// * `all`   — every `show all`, taken (a real `/at/` fetch each)
     /// * `top`   — every `load older`, until `— start of transcript —`
+    /// * `climb` — scroll UP a viewport at a time and let the screen's own
+    ///   trigger fetch, reporting where the reader lands each step
+    ///   (`debugClimbSteps`, driven by the view — this one is about the scroll
+    ///   view and cannot be done from the store)
     public func applyDebugSeam(_ raw: String) async {
         let words = Set(raw.lowercased().split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) })
@@ -451,8 +455,39 @@ public final class TranscriptStore {
     public static func debugWantsTop(
         _ environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
+        debugWords(environment).contains("top")
+    }
+
+    /// `ORC_TRANSCRIPT=climb` / `climb:20` — **the seam that scrolls.**
+    ///
+    /// `top` presses `load older` directly and proves the CURSOR WALK; it says
+    /// nothing at all about the screen, because it never moves the scroll view.
+    /// The defect this seam was added for lived entirely in the space between the
+    /// two: the walk was correct and the reader was put back on the trigger every
+    /// time, so a real thumb could not reach any of what the walk had fetched.
+    ///
+    /// So this one climbs the way a thumb does — one viewport per step, through
+    /// the same scroll position the app's own restore moves — and lets the real
+    /// geometry trigger decide whether to fetch. Nothing about paging is called
+    /// directly. It reports, per step, where the reader ended up, how much
+    /// content is above them, and which entry is at the top of the screen; a
+    /// reader parked on the tripwire reports the same three numbers every step,
+    /// and a reader making progress reports three that move.
+    ///
+    /// Returns the number of steps asked for, or nil when the word is absent.
+    public static func debugClimbSteps(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        for word in debugWords(environment) where word == "climb" || word.hasPrefix("climb:") {
+            let tail = word.dropFirst("climb".count).drop { $0 == ":" }
+            return max(1, Int(tail) ?? 12)
+        }
+        return nil
+    }
+
+    static func debugWords(_ environment: [String: String]) -> [String] {
         (environment["ORC_TRANSCRIPT"]?.lowercased().split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) } ?? []).contains("top")
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? [])
     }
     #endif
 

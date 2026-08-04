@@ -58,7 +58,7 @@ Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 253 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 264 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -118,6 +118,18 @@ SIMCTL_CHILD_ORC_TRANSCRIPT=top,tools,all,noise,fail \
 #   all   — every `show all`, taken (a real /messages/at/ fetch each)
 #   noise — the toolbar's `show system noise`
 #   fail  — park on the first tool result the tool reported an error for
+#   climb — SCROLL UP one viewport at a time (`climb:40` for forty steps) and
+#           let the screen's own trigger fetch. Reports one line per step on
+#           stdout; read it with `xcrun simctl launch --console-pty`:
+#
+#   ORC-CLIMB step=25 above=3313 content=13242 container=725 entries=158 \
+#     visible=151 oldest=96920877 newest=103833827 cursor=96920877 more=true \
+#     armed=true onscreen=12 anchor=97123793/0
+#
+#           `top` proves the CURSOR WALK and says nothing about the screen —
+#           it never moves the scroll view. `climb` is the one that can see
+#           whether a thumb could have reached any of what the walk fetched.
+#           See "The defect a phone found: a loader that spun forever".
 SIMCTL_CHILD_ORC_SCREEN=demo:resume:release-notes/a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2  …
 ```
 
@@ -1016,9 +1028,13 @@ what is open.*
   The chat drawer's `show full` only ever un-clamped a `lineLimit` on text the
   server had already dropped; it is now offered ONLY for text that merely looks
   long, and a bubble the server cut offers `open the full log` instead.
-* Opens at the newest entry; scrolling up loads older by `cursor_before` with a
-  `loading older…` row, and stops at `— start of transcript —` when byte 0 was
-  actually reached.
+* Opens at the newest entry; scrolling up loads older by `cursor_before` about a
+  screen before the reader runs out of window, holds their line still to the
+  point while the page lands, and stops at `— start of transcript —` when byte 0
+  was actually reached. The trigger is a pure rule (`TranscriptRules.topReach`)
+  and it disarms itself on every fetch, because the first version of this screen
+  put the reader back on its own tripwire — see "The defect a phone found: a
+  loader that spun forever".
 * **Auto-scroll only when the reader is already at the bottom.** Scrolled up
   into history, new output is offered as a `↓ N new` pill and the view does not
   move. It is a pure function (`TranscriptRules.follow`) with a test, because it
@@ -1085,6 +1101,94 @@ sits BELOW the scroll anchor, so `scrollTo(.bottom)` stops with the anchor at
 the viewport edge and the last entry is behind the strip anyway. The inset has
 to BE the anchor: the bottom spacer is `Space.md + accessoryHeight` tall.
 
+### The defect a phone found: a loader that spun forever
+
+> *"when i scroll up to the top of the full log, it keeps 'loading older …' but
+> they dont seem to actually appear"*
+
+**Everything upstream of the screen was correct.** A real 103 MB transcript
+walked twenty pages over the wire with the cursor advancing every time,
+`has_more_before` true throughout and not one empty page; every page carried
+visible (non-`meta`) content — 29/30, 30/30, 27/30, 5/8; `TranscriptRules.prepend`
+deduped and prepended in order; `TranscriptStore.applyOlder` moved `entries`,
+`hasMoreBefore` and `cursorBefore` correctly. **Pages arrived. The reader could
+not get to them.**
+
+The trigger was an `.onAppear` on the `loading older…` row, which is the first
+child of the `LazyVStack`, and the restore that followed the fetch was
+`proxy.scrollTo(store.visible.first?.id, anchor: .top)` — the oldest entry the
+window ALREADY held, which is the row immediately below that same trigger. So
+every user-driven load put the reader back **on the tripwire**, with the page
+that had just arrived stacked above the viewport, and the next flick upwards
+tripped it again before a line of it could be read. Worse, once parked there the
+marker never left the lazy stack's realisation window either, so `.onAppear`
+stopped firing at all: the loader kept saying `loading older…` — that row said it
+whenever there was more file behind it, in flight or not — and nothing more was
+ever fetched.
+
+**Measured, not reasoned about.** `ORC_TRANSCRIPT=climb` drives the scroll view
+itself, one viewport per step, through the same `ScrollPosition` the restore
+writes; it calls no paging API. Forty steps up the same 103 MB transcript, same
+build, same server, the only difference being which trigger was compiled in:
+
+| | pages fetched | entries held | oldest byte reached | longest run pinned to one row |
+|---|---|---|---|---|
+| `.onAppear` + boundary restore | **1** | 60 → 98 | 103,494,098 → 98,377,448 | **29 of 40 steps**, `above=12`, anchor `98378118/0` every time |
+| geometry trigger + point restore | **4** | 60 → 158 | 103,494,098 → 96,920,877 | 1 |
+
+Sixty steps with the fix: **17 pages, 60 → 427 entries, back from byte
+103,494,098 to byte 67,003,779 — 36.5 MB of the file walked, the oldest offset
+strictly decreasing at every load**, and 53 distinct entries at the top of the
+screen across 61 samples. The old trigger's own numbers are the bug report: the
+same `above`, the same anchor, twenty-nine times running, while the row said
+`loading older…`.
+
+**Three changes, and the rule is a value.**
+
+* **The trigger is scroll geometry, not a row's lifecycle.**
+  `TranscriptRules.topReach(offsetFromTop:armed:hasMoreBefore:loading:)` is a
+  pure function with eleven tests. It fires a page **900 pt before** the top —
+  so the fetch overlaps the reading instead of interrupting it — **disarms
+  itself when it fires**, and re-arms only on evidence the reader consumed what
+  arrived: either 2,200 pt clear of the top (the page that landed is between
+  them and it) or hard against the top. `rearmMargin > prefetchMargin` is the
+  hysteresis; the second leg is not a loophole in the first but the case the old
+  screen was refusing to answer, because a page can be eight entries of folded
+  tool traffic and "travel 2,200 pt clear" is then something the reader cannot
+  do. Ten of the seventeen pages in the sixty-step climb came through that leg.
+* **The restore is in points, not rows** — iOS 18's `ScrollPosition.scrollTo(y:)`
+  against the content-height delta. A reader is generally in the MIDDLE of an
+  entry (an assistant turn here is routinely taller than the phone), so "scroll
+  to the row that used to be at the top" is exact only at a row boundary, which
+  is precisely the position the old trigger produced and precisely what made it
+  re-fire. Measured across four landings: asked for `above` 509 / 827 / 0 / 893
+  and got 509 / 839 / 0 / 893 back — **the reader's line held to about 12 pt.**
+  The baseline is re-banked on every scroll event until the window actually
+  grows, because a `LazyVStack` revises `contentSize` by ±1,500 pt on its own as
+  it realises rows and a stale baseline would measure that churn as page height.
+* **The marker says what is true.** `loading older…` only while a fetch is in
+  flight; `↑ older output above` otherwise; `— start of transcript —` at byte 0.
+  A reader who has genuinely stalled must not see what a reader who is waiting
+  sees — that identity is half of why this took a phone to find.
+
+**What did not change, and was re-driven to prove it:** the screen still opens at
+the newest entry (the first page's prefetch fires during the opening layout and
+is still resolved by going to the bottom, not by holding a position); the
+`↓ N new` pill still offers new output rather than applying it; and the
+`top`/`tools`/`all`/`noise`/`fail` seams still press what they pressed.
+
+### The live tail, finally watched against a file that grows
+
+`ORC_TRANSCRIPT` and a synthetic session assembled from real records (rewritten
+`sessionId`, appended to while the screen was open) close the gap this document
+listed as open. Both halves, on a real server:
+
+* **Scrolled up at `— start of transcript —`**, three messages appended: the
+  window went 20 → 23 entries, the pill read **`↓ 3 new`**, and the screen did
+  not move a pixel — the same rows, in the same places, before and after.
+* **At the newest entry**, three more appended: they arrived at the bottom with
+  no pill, exactly as `TranscriptRules.follow` says they should.
+
 ### One deliberate deviation from the design spec
 
 The spec asks for an expanded tool block to have "a bounded height and its own
@@ -1115,12 +1219,18 @@ is still the block's own.
   page only when `file.size` moved. A hole — more output between two polls than
   one page holds — is detected (`TranscriptRules.tail` -> `.gap`) and never
   stitched shut; the pill says `new output` rather than a count it cannot know.
+  The `.gap` branch is still only ever driven by a test — producing one needs
+  more output between two polls than a thirty-entry page holds.
 - **A compaction was never observed live.** The inode/dev reset is driven by a
   test and by the store's own seam, not by a real `/compact`.
 - **The bounded window trims only at the old end and only while the reader is at
   the newest entry**, so a reader parked in the middle of a very long transcript
   holds every page they walked. 900 entries is the ceiling; nothing evicts under
-  a thumb.
-- **The live tail was never watched against a growing file.** The cadence, the
-  probe and the `.gap` branch are driven by tests; a real agent writing while
-  the screen was open was not.
+  a thumb. A sixty-step climb reached 427 held entries, so the trim itself has
+  still not been observed — it needs a reader who walks back 900 entries and then
+  returns to the newest one.
+- ~~**The live tail was never watched against a growing file.**~~ **Watched** —
+  see "The live tail, finally watched against a file that grows". What was
+  appended was real records with a rewritten `sessionId`, not a live agent
+  typing, so the *cadence* under a busy agent (the 5 s branch, the `.gap`
+  detection) is still only pinned by tests.
