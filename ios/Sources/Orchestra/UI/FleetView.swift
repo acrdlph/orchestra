@@ -15,17 +15,23 @@ public struct FleetView: View {
     @Bindable private var limits: LimitsStore
     @Bindable private var topology: TopologyStore
     @Bindable private var router: PushRouter
+    /// The mission draft. Held by `AppModel`, **not** by the composer, so the
+    /// biometric gate's teardown of this whole subtree cannot take it — and so
+    /// the sheet's `isPresented` survives to re-present itself after the unlock.
+    @Bindable private var drafts: DraftStore
     private let client: OrchestraClient
     private let serverLabel: String
     private let onUnpair: () -> Void
     /// Open the mission composer on appear. Same seam as `initialRoute`, and it
     /// exists for the same reason: a simulator cannot be tapped from a script.
     private let openComposer: Bool
+    /// Which of the composer's four option pickers to present on top of it.
+    /// `ORC_SCREEN=mission:model`. Nil in every shipping path.
+    private let initialPicker: PickerField?
     /// A sheet for the initially-pushed worktree, and text to send from the
     /// initially-pushed chat. Both nil in every shipping path.
     private let initialSheet: WorktreeSheet?
     private let initialSend: String?
-    @State private var composing = false
 
     /// Ticks the ages. Mutating a `Date` that only feeds `Text` is cheap; what
     /// would not be cheap is anything that changes a row's SIZE on this tick,
@@ -56,9 +62,10 @@ public struct FleetView: View {
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     public init(store: FleetStore, actions: ActionsStore, limits: LimitsStore,
-                topology: TopologyStore, router: PushRouter,
+                topology: TopologyStore, router: PushRouter, drafts: DraftStore,
                 client: OrchestraClient, serverLabel: String,
                 initialRoute: FleetRoute? = nil, openComposer: Bool = false,
+                initialPicker: PickerField? = nil,
                 initialSheet: WorktreeSheet? = nil, initialSend: String? = nil,
                 onUnpair: @escaping () -> Void) {
         self.store = store
@@ -66,10 +73,12 @@ public struct FleetView: View {
         self.limits = limits
         self.topology = topology
         self.router = router
+        self.drafts = drafts
         self.client = client
         self.serverLabel = serverLabel
         self.initialRoute = initialRoute
         self.openComposer = openComposer
+        self.initialPicker = initialPicker
         self.initialSheet = initialSheet
         self.initialSend = initialSend
         self.onUnpair = onUnpair
@@ -96,7 +105,7 @@ public struct FleetView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The one control on the board that spends money, and it is
                     // one tap from a confirmation, never from a launch.
-                    Button { composing = true } label: {
+                    Button { drafts.setComposerOpen(true) } label: {
                         Image(systemName: "plus.circle")
                     }
                     .accessibilityLabel("new mission")
@@ -126,8 +135,15 @@ public struct FleetView: View {
                     }
                 }
             }
-            .sheet(isPresented: $composing) {
-                MissionComposer(fleet: store, limits: limits, actions: actions)
+            // **The `isPresented` binding lives in the store, not in `@State`.**
+            // The gate swaps this whole subtree for `LockView` on every
+            // background, which tears down a `@State` flag and with it the
+            // presented sheet. Bound to the store, the flag survives the lock and
+            // the composer — text and all — comes back with the board.
+            .sheet(isPresented: Binding(get: { drafts.isComposerOpen },
+                                        set: { drafts.setComposerOpen($0) })) {
+                MissionComposer(fleet: store, limits: limits, actions: actions,
+                                drafts: drafts, initialPicker: initialPicker)
             }
         }
         // One environment write, and every status pill on every screen below
@@ -137,7 +153,7 @@ public struct FleetView: View {
         .onReceive(ticker) { now = $0 }
         .task {
             if let initialRoute, path.isEmpty { path = [initialRoute] }
-            if openComposer { composing = true }
+            if openComposer { drafts.setComposerOpen(true) }
             // A tap that arrived before this tab was mounted is waiting in the
             // router; take it now so a cold launch from a notification still
             // lands on the session, not the board.
