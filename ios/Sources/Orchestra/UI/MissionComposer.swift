@@ -19,18 +19,26 @@ import SwiftUI
 /// 3. **There is no idempotency key and no way to add one** — see `Actuation`. So
 ///    the Launch button in the confirmation disables on tap and never re-enables,
 ///    and a timeout is rendered as "did it launch?", never as "failed".
+///
+/// **Nothing the user typed lives in this view.** The mission text and the four
+/// choices are held by `DraftStore`, not by `@State`, because the biometric gate
+/// replaces the whole paired subtree with `LockView` on every background — and
+/// that takes the presented sheet and every `@State` inside it. See `DraftStore`.
 public struct MissionComposer: View {
     @Bindable private var fleet: FleetStore
     @Bindable private var limits: LimitsStore
     @Bindable private var actions: ActionsStore
+    @Bindable private var drafts: DraftStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var mission = ""
-    @State private var worktree: String?      // nil == Auto
-    @State private var account: String?       // nil == Auto
-    @State private var model: String?         // no default, by design
-    @State private var effort: String?        // no default, by design
+    /// The editor's focus, held so it can be **cleared before a picker is
+    /// presented**. See `OptionPickerSheet` for what a live keyboard did to the
+    /// menu this replaced.
+    @FocusState private var editorFocused: Bool
+    /// Which of the four rows has its picker up. `nil` is none.
+    @State private var picking: PickerField?
     @State private var confirming = false
+    @State private var discarding = false
     @State private var forcing: DispatchRefusal?
 
     /// The four the desktop offers, which are the four `claude --model` takes.
@@ -43,13 +51,30 @@ public struct MissionComposer: View {
         ("ultracode", "hard feature · long-running"),
     ]
 
-    public init(fleet: FleetStore, limits: LimitsStore, actions: ActionsStore) {
+    /// Nil in every shipping path — see `DebugRoute`. `ORC_SCREEN=mission:model`
+    /// presents that row's picker on launch, because a sheet inside a sheet is
+    /// the one thing `xcrun simctl` can neither tap nor reach any other way, and
+    /// the defect these pickers replace is one only a screenshot can prove gone.
+    private let initialPicker: PickerField?
+
+    public init(fleet: FleetStore, limits: LimitsStore, actions: ActionsStore,
+                drafts: DraftStore, initialPicker: PickerField? = nil) {
         self.fleet = fleet
         self.limits = limits
         self.actions = actions
+        self.drafts = drafts
+        self.initialPicker = initialPicker
     }
 
     private var run: ActionsStore.DispatchRun? { actions.dispatch }
+
+    // The draft, read and written through the store. There is deliberately no
+    // local mirror: a second copy is a second thing the lock can delete.
+    private var mission: String { drafts.mission }
+    private var worktree: String? { drafts.worktree }   // nil == Auto
+    private var account: String? { drafts.account }     // nil == Auto
+    private var model: String? { drafts.model }         // no default, by design
+    private var effort: String? { drafts.effort }       // no default, by design
 
     public var body: some View {
         NavigationStack {
@@ -79,7 +104,39 @@ public struct MissionComposer: View {
                         .disabled(!canLaunch)
                 }
             }
-            .task { if limits.report == nil { await limits.load() } }
+            .task {
+                if limits.report == nil { await limits.load() }
+                // Through the same call the row's tap makes — including the
+                // focus clear — so the seam presses the button rather than
+                // being a second way to present a picker.
+                if let initialPicker { present(initialPicker) }
+            }
+        }
+        // The draft goes away the moment the server ACCEPTS the dispatch — a job
+        // id is back, an agent is being started, and this server has no
+        // idempotency key, so text that reappeared later would invite exactly the
+        // double-fire `Actuation` cannot refuse. A refusal (no job) keeps the
+        // draft: "Back to the draft" has to have a draft to go back to.
+        .onChange(of: actions.dispatch?.job) { _, job in
+            if job != nil { drafts.clear() }
+        }
+        // One sheet for all four rows. `item:` rather than four booleans, so two
+        // pickers cannot be up at once and the row decides its own contents.
+        .sheet(item: $picking) { field in
+            OptionPickerSheet(title: field.title,
+                              options: options(for: field),
+                              selection: drafts.value(for: field.draftField)) { value in
+                drafts.select(field.draftField, value)
+                picking = nil
+            }
+        }
+        .confirmationDialog("Discard this draft?", isPresented: $discarding,
+                            titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { drafts.clear() }
+            Button("Keep it", role: .cancel) {}
+        } message: {
+            Text("The text and the four choices go. Cancel keeps them — the next "
+                 + "time you open the composer they come back.")
         }
         .sheet(isPresented: $confirming) {
             LaunchConfirmSheet(mission: mission, worktree: worktree, account: account,
@@ -108,7 +165,7 @@ public struct MissionComposer: View {
             } useOpus: {
                 actions.clearDispatch()
                 forcing = nil
-                model = "opus"
+                drafts.select(.model, "opus")
                 actions.launch(mission: WireText.collapsed(mission),
                                worktree: worktree, account: refusal.opusAccount,
                                model: "opus", effort: effort ?? "", forceModel: false)
@@ -157,10 +214,11 @@ public struct MissionComposer: View {
     private var editor: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.md) {
-                TextEditor(text: $mission)
+                TextEditor(text: missionText)
                     .font(OrcFont.body)
                     .foregroundStyle(Palette.textPrimary)
                     .scrollContentBackground(.hidden)
+                    .focused($editorFocused)
                     .frame(minHeight: 180)
                     .padding(Space.sm)
                     .background(Palette.sunken)
@@ -176,12 +234,7 @@ public struct MissionComposer: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                HStack {
-                    Spacer()
-                    Text(verbatim: "\(mission.count) ch")
-                        .font(OrcFont.meta)
-                        .foregroundStyle(Palette.textDisabled)
-                }
+                draftLine
 
                 pickers
                 if let disabledReason {
@@ -199,43 +252,88 @@ public struct MissionComposer: View {
         }
     }
 
+    /// The editor writes through the store, never into a `@State` the lock can
+    /// delete. In-memory on every keystroke; on disk 500 ms later.
+    private var missionText: Binding<String> {
+        Binding(get: { drafts.mission }, set: { drafts.setMission($0) })
+    }
+
+    /// `draft saved`, the character count, and the one explicit way to throw a
+    /// draft away.
+    ///
+    /// **Cancel keeps the text; only this discards it.** Losing a long mission to
+    /// a mis-tapped Cancel is worse than a draft that outstays its welcome, so
+    /// the toolbar's Cancel closes and keeps, and getting rid of it is a
+    /// deliberate two-tap act that only appears when there is something to lose.
+    private var draftLine: some View {
+        HStack(spacing: Space.md) {
+            if drafts.hasContent {
+                Button { discarding = true } label: {
+                    HStack(spacing: Space.xs) {
+                        Image(systemName: "trash")
+                        Text("discard draft")
+                    }
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("discard draft")
+            }
+            Spacer(minLength: 0)
+            // Only once the write has actually landed — the debounce is 500 ms
+            // and a label that says "saved" before it is a small lie.
+            if drafts.hasContent, !drafts.isSaving {
+                Text("draft saved")
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            Text(verbatim: "\(mission.count) ch")
+                .font(OrcFont.meta)
+                .foregroundStyle(Palette.textDisabled)
+        }
+    }
+
     @ViewBuilder
     private var pickers: some View {
         VStack(spacing: 0) {
-            pickerRow("Worktree", value: worktree ?? "Auto") {
-                Button("Auto — the server picks") { worktree = nil }
-                // The free list is the server's own `free_worktrees`, which is a
-                // pure function of the cards. It is not re-derived here.
-                ForEach(fleet.state?.freeWorktrees ?? [], id: \.self) { name in
-                    Button(name) { worktree = name }
-                }
-            }
+            pickerRow(.worktree, value: worktree ?? "Auto")
             Divider().overlay(Palette.hairline)
-            pickerRow("Account", value: account ?? "Auto") {
-                Button("Auto — most headroom") { account = nil }
-                ForEach(limits.report?.ranked ?? []) { item in
-                    Button(accountLabel(item)) { account = item.label }
-                }
-            }
+            pickerRow(.account, value: account ?? "Auto")
             Divider().overlay(Palette.hairline)
-            pickerRow("Model", value: model ?? "— pick one —",
-                      missing: model == nil) {
-                ForEach(Self.models, id: \.self) { name in
-                    Button(name) { model = name }
-                }
-            }
+            pickerRow(.model, value: model ?? "— pick one —", missing: model == nil)
             Divider().overlay(Palette.hairline)
-            pickerRow("Effort", value: effort ?? "— pick one —",
-                      missing: effort == nil) {
-                ForEach(Self.efforts, id: \.0) { name, note in
-                    Button("\(name) — \(note)") { effort = name }
-                }
-            }
+            pickerRow(.effort, value: effort ?? "— pick one —", missing: effort == nil)
         }
         .background(Palette.surface)
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    /// What each row offers. `nil` is `Auto` and is always first where the server
+    /// will place for us; model and effort have no auto and no default, which is
+    /// the server's own refusal mirrored.
+    private func options(for field: PickerField) -> [PickerOption] {
+        switch field {
+        case .worktree:
+            // The free list is the server's own `free_worktrees`, which is a
+            // pure function of the cards. It is not re-derived here.
+            return [PickerOption(value: nil, title: "Auto — the server picks",
+                                 note: "the cleanest free worktree")]
+                + (fleet.state?.freeWorktrees ?? []).map {
+                    PickerOption(value: $0, title: $0)
+                }
+        case .account:
+            return [PickerOption(value: nil, title: "Auto — most headroom",
+                                 note: "the account with the most left for this model")]
+                + (limits.report?.ranked ?? []).map {
+                    PickerOption(value: $0.label, title: accountLabel($0))
+                }
+        case .model:
+            return Self.models.map { PickerOption(value: $0, title: $0) }
+        case .effort:
+            return Self.efforts.map { PickerOption(value: $0.0, title: $0.0, note: $0.1) }
+        }
     }
 
     private func accountLabel(_ item: AccountLimits) -> String {
@@ -248,14 +346,28 @@ public struct MissionComposer: View {
         return label
     }
 
-    private func pickerRow<Content: View>(_ title: String, value: String,
-                                          missing: Bool = false,
-                                          @ViewBuilder menu: () -> Content) -> some View {
-        Menu {
-            menu()
+    /// **Clear focus, then present.** The dismissal is the courtesy half — the
+    /// sheet below is the fix — and it is one function so the row and the
+    /// `ORC_SCREEN=mission:<row>` seam cannot drift apart.
+    private func present(_ field: PickerField) {
+        editorFocused = false
+        picking = field
+    }
+
+    /// The row itself is unchanged — title left, current value and chevron right.
+    /// **Only the presentation changed**: this was a `Menu`, and a menu is laid
+    /// out into the space left around its anchor. Squeeze that space (a tall
+    /// third-party keyboard below, the nav bar above, a long mission pushing the
+    /// row down) and the menu becomes a ~20 pt sliver. So the tap now clears
+    /// focus — putting the keyboard away — and presents a sheet, which the window
+    /// lays out and no anchor can shrink.
+    private func pickerRow(_ field: PickerField, value: String,
+                           missing: Bool = false) -> some View {
+        Button {
+            present(field)
         } label: {
             HStack {
-                Text(title)
+                Text(field.title)
                     .font(OrcFont.bodyCompact)
                     .foregroundStyle(Palette.textSecondary)
                 Spacer()
@@ -269,6 +381,37 @@ public struct MissionComposer: View {
             }
             .padding(.horizontal, Space.md)
             .frame(minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(field.title), \(value)")
+        .accessibilityHint("Double tap to choose")
+    }
+}
+
+/// Which of the composer's four rows a picker belongs to. `Identifiable` because
+/// one `.sheet(item:)` serves all four — four booleans would be four ways to
+/// present two pickers at once.
+public enum PickerField: String, Identifiable, CaseIterable, Sendable {
+    case worktree, account, model, effort
+
+    public var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .worktree: "Worktree"
+        case .account: "Account"
+        case .model: "Model"
+        case .effort: "Effort"
+        }
+    }
+
+    var draftField: DraftStore.Field {
+        switch self {
+        case .worktree: .worktree
+        case .account: .account
+        case .model: .model
+        case .effort: .effort
         }
     }
 }

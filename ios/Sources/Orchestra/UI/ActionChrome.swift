@@ -220,6 +220,128 @@ public struct ConsequenceRow: View {
     }
 }
 
+/// One choosable option in an `OptionPickerSheet`. `value == nil` is the `Auto`
+/// row — the composer sends `nil` and lets the server place the mission.
+public struct PickerOption: Identifiable, Equatable, Sendable {
+    public let value: String?
+    /// Shown in full and allowed to wrap. Account labels reach
+    /// `main · 68% left · below reserve`, which a menu row clipped.
+    public let title: String
+    /// The option's own description, where it has one — effort's `simple task`
+    /// / `hard feature · long-running`. Model has none here for the same reason
+    /// the desktop board's `<select>` has none: nothing in this project
+    /// describes what the four models are for, and inventing that copy on a
+    /// phone would be inventing the product.
+    public let note: String?
+
+    public var id: String { value ?? "\u{0}auto" }
+
+    public init(value: String?, title: String, note: String? = nil) {
+        self.value = value
+        self.title = title
+        self.note = note
+    }
+}
+
+/// A bottom-sheet option picker, and it replaces a `Menu`.
+///
+/// **Why a sheet.** A `Menu` is laid out by UIKit into whatever space is left
+/// around its anchor. In the mission composer that space is squeezed from below
+/// by the keyboard and from above by the navigation bar, and the anchor row
+/// itself sits lower the more mission text has been typed. With a **third-party
+/// keyboard granted Full Access** — Wispr Flow, which adds its own toolbar row
+/// above the standard layout and is hosted out of process — plus a long mission,
+/// the region collapses and the menu renders as a ~20 pt sliver pinned under the
+/// nav bar: one clipped option, scrollable only with great care. That is why it
+/// was intermittent — keyboard height × scroll offset × text length — and why
+/// this is not a menu any more. A sheet is presented by the window, is full
+/// width, is sized by the system, and **has no anchor to be squeezed around**.
+///
+/// The composer also clears focus before presenting one, so the keyboard is not
+/// even on screen. Both halves are deliberate: the dismissal is courtesy, the
+/// sheet is the fix.
+public struct OptionPickerSheet: View {
+    private let title: String
+    private let options: [PickerOption]
+    private let selection: String?
+    private let choose: (String?) -> Void
+
+    public init(title: String, options: [PickerOption], selection: String?,
+                choose: @escaping (String?) -> Void) {
+        self.title = title
+        self.options = options
+        self.selection = selection
+        self.choose = choose
+    }
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.md) {
+                SheetHeader(title, symbol: "chevron.up.chevron.down",
+                            hue: Palette.textTertiary)
+                VStack(spacing: 0) {
+                    ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                        if index > 0 { Divider().overlay(Palette.hairline) }
+                        row(option)
+                    }
+                }
+                .background(Palette.raised)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .stroke(Palette.hairline, lineWidth: 1))
+            }
+            .padding(Space.lg)
+        }
+        .background(Palette.surface.ignoresSafeArea())
+        // Deliberately the system detents rather than a `SheetHeight` constant:
+        // this sheet holds a list whose length is the server's (free worktrees,
+        // ranked accounts), so a fixed height would clip exactly the case a
+        // menu already clipped. It also shares no detent with the launch
+        // confirm, which is `Actuation`'s rule 3.
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func row(_ option: PickerOption) -> some View {
+        let isSelected = option.value == selection
+        return Button {
+            choose(option.value)
+        } label: {
+            HStack(alignment: .top, spacing: Space.md) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(OrcFont.bodyCompact)
+                    .foregroundStyle(isSelected ? Palette.statusFree : Palette.control)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Space.xxs) {
+                    Text(verbatim: option.title)
+                        .font(OrcFont.code)
+                        .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textSecondary)
+                        // Wrap rather than clip: the whole point of this sheet.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let note = option.note {
+                        Text(note)
+                            .font(OrcFont.meta)
+                            .foregroundStyle(Palette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.md)
+            // ≥44 pt, the tap target this row never had inside a menu.
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
 /// The elapsed counter that stands in for progress when there is none to show.
 ///
 /// **A staged label on a synchronous call with no job id is a timed fiction.**

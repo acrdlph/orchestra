@@ -47,7 +47,7 @@ Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 184 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 212 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -79,6 +79,9 @@ touch ~/.claude-account2/projects/*/<sid>.jsonl     # → delta on the wire in ~
 
 # 7. phase 3 — every sheet, and a real send, without a finger
 SIMCTL_CHILD_ORC_SCREEN=mission                     xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=mission:model               xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=mission:effort \
+SIMCTL_CHILD_ORC_MISSION='a long mission…'          xcrun simctl launch booted sh.orchestra.app
 SIMCTL_CHILD_ORC_SCREEN=finish:ConfidAi7            xcrun simctl launch booted sh.orchestra.app
 SIMCTL_CHILD_ORC_SCREEN=resume:ConfidAi7/<sid>      xcrun simctl launch booted sh.orchestra.app
 SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAi7/account4/<sid> \
@@ -144,7 +147,7 @@ ios/
     │             DemoTopology · DemoPayload · DemoCopy   (NOT under UI —
     │             it is data and rules, so `swift test` decodes all of it)
     ├── Store/    FleetStore · FleetApplier · ChatStore · LimitsStore
-    │             PairingStore                    (@MainActor @Observable)
+    │             PairingStore · DraftStore        (@MainActor @Observable)
     └── UI/       Palette · Typography · StatusStyle · ConnectionBar
                   FleetView · WorktreeDetailView · ChatView · LimitsView
                   ServerView · rows
@@ -480,6 +483,103 @@ device-id segment collides with a real (long-revoked) device in `devices.json`.
 It is synthetic — its sha256 matches nothing in the registry and the live server
 answers it 401 — but a fixture that looks like a credential is worth not writing.
 
+## The composer, fixed by a phone
+
+Two defects a user hit on a real device, in the one screen that spends money.
+Both are the shape this project keeps finding: everything compiled, everything on
+screen was correct, and the thing was broken in a way no simulator run had shown.
+
+### 1. A `Menu` is laid out into the space around its anchor, and a tall keyboard takes that space
+
+The four option rows (Worktree / Account / Model / Effort) were `Menu { … }
+label: { … }`, inside a `ScrollView`, inside a `.sheet`. **UIKit lays a menu into
+whatever region is left around its anchor.** In this screen that region is
+squeezed from below by the keyboard and from above by the navigation bar, and the
+anchor row itself sits lower the more mission text has been typed. Multiply those
+together and it collapses.
+
+Reproduced by the user, not hypothesised: *"the menu issue occurs when I have the
+Wispr keyboard and I've granted it access to my keyboard."* A third-party
+keyboard with **Full Access** is hosted out of process and adds its own toolbar
+row above the standard layout, so it is materially taller than the stock one.
+With that keyboard up and a long mission typed, the menu rendered as a **~20 pt
+sliver pinned under the navigation bar** — one clipped option, scrollable only
+with great care. With the stock keyboard there is usually just enough room, which
+is exactly why it looked intermittent: keyboard height × scroll offset × text
+length.
+
+**The fix removes the dependency on anchor geometry rather than tuning it.**
+Tapping a row clears the editor's `@FocusState` (the keyboard goes away) and
+presents an `OptionPickerSheet` — a bottom sheet the *window* lays out, full
+width, system detents, with nothing to be squeezed around. Each option is ≥44 pt,
+shows a checkmark on the current selection, carries its description where it has
+one, and **wraps instead of clipping**, which is what the account labels
+(`work · 0% left · exhausted`) needed. One generic sheet serves all four rows;
+the row's own design — title left, value and chevron right, amber `— pick one —`
+for the two with no default — is untouched. Only the presentation changed.
+
+Geometry independence here is **structural, not measured**: the sheet has no
+anchor, so there is no region for a keyboard to shrink. What was measured is the
+condition itself — a long mission with the software keyboard up, the four rows
+squeezed into the band the old menu had to fit inside, and then the same code
+path clearing focus and presenting a full-size sheet
+(`11-keyboard-up.png` → `12-picker-over-keyboard.png`). A simulator cannot run
+Wispr Flow, so the *taller* keyboard is the one variable still unproven on
+hardware; the fix does not read keyboard height anywhere, which is the point.
+
+### 2. The biometric gate deleted the draft, because the draft lived in `@State`
+
+Open the composer, type a long mission, switch to another app (to start dictation
+software, say), come back: the app re-locks behind Face ID — **correct, and
+deliberately unchanged** — and after unlocking the sheet was gone and so was the
+text. `RootView` swaps the entire paired subtree for `LockView` on `.background`,
+and that takes the presented sheet and every `@State` inside it. Nothing was
+persisted. `UX.md` §3.5 asked for a persisted draft and it had never been built.
+
+`Store/DraftStore.swift` now holds the text, the four selections and the
+composer's `isPresented`, outside the gated subtree, in `AppModel`:
+
+* **debounced ~500 ms** on text change, so a 3,000-character mission is not
+  re-encoded on every keystroke, and **flushed synchronously on `.background`**
+  in `OrchestraApp`'s `scenePhase` handler, before anything is awaited — a
+  suspended app can be killed with no further callback;
+* **the sheet's `isPresented` binding is the store's**, so the composer
+  re-presents itself when the subtree comes back after the unlock;
+* **re-presented only within 24 h.** Beyond that the text is kept and restored
+  the next time the composer is opened, but no sheet rises unbidden days later.
+  An empty draft is never restored as an open sheet;
+* **`UserDefaults`, not an App Group** — there is no second process to share it
+  with (no share extension, no widget), and an entitlement bought for a reader
+  that does not exist is one more thing this repo's ad-hoc signing has to carry.
+  The comment in `DraftStore` says so, and names the day it changes.
+
+**Cancel keeps the text; only two things clear it.** Losing a long mission to a
+mis-tapped Cancel is worse than a draft that outstays its welcome, so Cancel
+closes and keeps, and the next open restores. A draft goes away when the server
+**accepts** a dispatch (a job id is back, an agent is starting, and this server
+has no idempotency key — text that reappeared afterwards would invite the
+double-fire nothing can refuse), and when the user taps **`discard draft`**, a
+small affordance that appears next to the character count only when there is a
+draft and asks once before it does it. A *refused* dispatch keeps the draft:
+"Back to the draft" has to have a draft to go back to.
+
+Seventeen tests in `DraftTests.swift` drive the store against a throwaway
+`UserDefaults` suite: the round trip, the debounce coalescing five keystrokes
+into one write, both sides of the 24 h window, the kill-with-no-background
+fallback, whitespace-is-not-content, and the launch/cancel/discard split.
+
+### Two more `#if DEBUG` seams, for the same reason as the first three
+
+`ORC_SCREEN=mission:model` (also `worktree`, `account`, `effort`) presents that
+row's picker on top of the composer, through the same `present(_:)` the row's tap
+calls — because a **sheet inside a sheet** is something `xcrun simctl` can
+neither tap nor otherwise reach, and a fix whose whole claim is "the picker is
+full-size now" is one only a screenshot can settle. `ORC_MISSION=<text>` seeds
+the draft through `DraftStore.setMission`, the same call the editor makes on
+every keystroke, because the two things most worth looking at — a picker
+presented over a LONG mission, and a draft surviving a background — both need
+text on screen that no script can type.
+
 ## Phase 2: three defects found by RUNNING it, not by reading
 
 All three had the same shape — everything compiled, everything on screen was
@@ -590,11 +690,12 @@ in the UI is now `Text(verbatim:)`.
 - **`force_model` was never exercised against a real reserve.** The sheet exists
   and is wired; the only `needs_decision` reachable without spending was a
   nonexistent account, whose `can_opus` was false.
-- **Draft persistence.** `UX.md` §3.5 wants the mission draft in the App Group on
-  a 500 ms debounce, surviving app kill. It lives in `@State` today, so a
-  dismissed composer loses its text.
+- ~~**Draft persistence.**~~ **Built** — see "The composer, fixed by a phone" below.
+  `UX.md` §3.5's App Group is deliberately still `UserDefaults`: there is no
+  second process to share it with yet.
 - **Share extension, `orchestra://mission?text=`, Live Activities.** All of §3.5
-  and §8.3's surfaces are additive and none is load-bearing.
+  and §8.3's surfaces are additive and none is load-bearing. The share extension
+  is the one that would turn `DraftStore`'s `UserDefaults` into an App Group.
 - **The branch map** (`UX.md` §5) and `/api/topology`.
 - **Clock skew.** Every relative label is `device now` minus a server instant, and
   nothing corrects for skew. `IOS-APP.md` §5.4 samples it from

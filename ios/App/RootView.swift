@@ -43,9 +43,19 @@ struct RootView: View {
     /// most dangerous screen can be looked at without a finger.
     private var initialComposer: Bool {
         #if DEBUG
-        return DebugRoute.fromEnvironment() == .mission
+        return DebugRoute.fromEnvironment()?.opensComposer ?? false
         #else
         return false
+        #endif
+    }
+
+    /// `ORC_SCREEN=mission:model` presents that row's picker on top of the
+    /// composer. A sheet inside a sheet has no other scriptable way in.
+    private var initialPicker: PickerField? {
+        #if DEBUG
+        return DebugRoute.fromEnvironment()?.composerPicker
+        #else
+        return nil
         #endif
     }
 
@@ -199,10 +209,12 @@ struct RootView: View {
                           limits: model.limits,
                           topology: model.topology,
                           router: model.router,
+                          drafts: model.drafts,
                           client: model.client,
                           serverLabel: model.pairing.profile?.display ?? "—",
                           initialRoute: initialFleetRoute,
                           openComposer: initialComposer,
+                          initialPicker: initialPicker,
                           initialSheet: initialWorktreeSheet,
                           initialSend: initialSend,
                           onLeave: leave)

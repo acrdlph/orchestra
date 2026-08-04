@@ -47,9 +47,16 @@ enum DebugRoute: Equatable {
     /// A `cclimits` slug — the key `/api/limits` uses, which is NOT always
     /// orchestra's own account label.
     case account(String)
-    /// The mission composer, opened on launch. Phase 3's most dangerous screen,
-    /// and a sheet — which `xcrun simctl` has no other way to reach.
-    case mission
+    /// The mission composer, opened on launch, optionally with one of its four
+    /// option pickers already presented — `mission`, `mission:model`,
+    /// `mission:effort`, `mission:worktree`, `mission:account`.
+    ///
+    /// The picker half was added for the same reason the composer half was:
+    /// **a sheet inside a sheet cannot be tapped from a script**, and the defect
+    /// these pickers were rebuilt to fix (a `Menu` collapsing to a ~20 pt sliver
+    /// when a tall third-party keyboard squeezed its anchor region) is one that
+    /// only a screenshot can prove is gone.
+    case mission(picker: String?)
     /// A worktree with its finish sheet already presented. Same destination and
     /// same sheet a tap presents; the only difference is what pressed it.
     case finish(String)
@@ -89,7 +96,9 @@ enum DebugRoute: Equatable {
         case "server": return .server
         case "notifications", "push": return .notifications
         case "map": return .map
-        case "mission": return .mission
+        case "mission":
+            guard parts.count == 2, !parts[1].isEmpty else { return .mission(picker: nil) }
+            return .mission(picker: parts[1].lowercased())
         case "finish":
             guard parts.count == 2, !parts[1].isEmpty else { return nil }
             return .finish(parts[1])
@@ -139,6 +148,18 @@ enum DebugRoute: Equatable {
         case .resume(_, let sid): .resume(sid: sid)
         default: nil
         }
+    }
+
+    /// Whether this route opens the mission composer, and which picker (if any)
+    /// it should present on top of it.
+    var opensComposer: Bool {
+        if case .mission = self { return true }
+        return false
+    }
+
+    var composerPicker: PickerField? {
+        if case .mission(let picker) = self, let picker { return PickerField(rawValue: picker) }
+        return nil
     }
 
     /// What the Fleet tab should push, if anything.

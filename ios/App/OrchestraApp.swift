@@ -35,6 +35,16 @@ struct OrchestraApp: App {
                     await model.start()
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    // The draft is flushed SYNCHRONOUSLY, here, before anything
+                    // is awaited: a backgrounded app can be killed with no
+                    // further callback, and the debounced write may be up to
+                    // 500 ms from landing. This is also where the timestamp the
+                    // 24 h re-present window is measured from is stamped.
+                    switch phase {
+                    case .background: model.drafts.flushForBackground()
+                    case .active: model.drafts.foregrounded()
+                    default: break
+                    }
                     Task { await model.scenePhaseChanged(to: phase) }
                 }
         }
@@ -64,6 +74,12 @@ final class AppModel {
     /// category, the delegate. Held here so the app delegate can hand it the
     /// device token and so `scenePhaseChanged` can re-assert registration.
     let pushController: PushController
+    /// The mission draft. **App-level and deliberately outside the gated
+    /// subtree**: `RootView` shows `LockView` in place of the entire paired app
+    /// on every background, which destroys the presented composer and every
+    /// `@State` in it. A draft held here survives the re-lock; the lock itself is
+    /// untouched.
+    let drafts: DraftStore
 
     /// Requested once. Authorization prompts the user, and pairing can happen
     /// after launch, so the push flow is armed both from `start()` and from the
@@ -84,12 +100,14 @@ final class AppModel {
         let router = PushRouter()
         self.router = router
         self.pushController = PushController(store: push, router: router)
+        self.drafts = DraftStore()
     }
 
     func start() async {
         await pairing.restore()
         #if DEBUG
         await pairFromLaunchEnvironment()
+        seedDraftFromLaunchEnvironment()
         #endif
         if pairing.isPaired {
             fleet.start()
@@ -207,6 +225,24 @@ final class AppModel {
             ? PushCategory.replyAction : "default"
         await pushController.handle(message: message, actionIdentifier: action,
                                     replyText: env["ORC_PUSH_REPLY"])
+    }
+    #endif
+
+    #if DEBUG
+    /// `ORC_MISSION=<text>` puts text in the draft before the composer opens.
+    ///
+    /// Same family as `ORC_SEND`: a simulator cannot be typed into from a script,
+    /// and the two things that most need looking at here — a picker presented
+    /// over a LONG mission (the exact condition under which the old menu
+    /// collapsed) and the draft surviving a background — both require text on
+    /// screen that no script can type. It goes through `DraftStore.setMission`,
+    /// the same call the editor makes on every keystroke. It is a way to press
+    /// the key, not a second way to hold a draft.
+    private func seedDraftFromLaunchEnvironment() {
+        guard let text = ProcessInfo.processInfo.environment["ORC_MISSION"],
+              !text.isEmpty else { return }
+        drafts.setMission(text)
+        drafts.flush()
     }
     #endif
 
