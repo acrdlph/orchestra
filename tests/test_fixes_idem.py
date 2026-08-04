@@ -345,6 +345,113 @@ class TestHandlerWiring(IdemBase):
         self.assertFalse(fb.idem.IDEM_STORE.exists())
 
 
+# ---------------------------------- M3: the store is capped and device-namespaced
+
+class TestStoreIsCappedAndNamespaced(IdemBase):
+    """A verbatim key, an unbounded record set, and a header-only key were three
+    ways to abuse the store: an over-long key, a store that grows without bound,
+    and one device squatting or replaying another's key."""
+
+    PAY = {"mission": "land the branch"}
+    DEV_A = {"id": "aaaa1111", "label": "A"}
+    DEV_B = {"id": "bbbb2222", "label": "B"}
+
+    def _begin(self, key, device=None, payload=None, now=T0):
+        return fb.idem.begin(key, "POST", "/api/dispatch",
+                             self.PAY if payload is None else payload,
+                             None, now, device=device)
+
+    # ---- (a) the key length cap
+
+    def test_an_over_long_key_is_refused(self):
+        verdict, data = self._begin("x" * (fb.idem.IDEM_MAX_KEY_LEN + 1))
+        status, code, _msg, _extra = data
+        self.assertEqual(verdict, "reject")
+        self.assertEqual((status, code), (400, "idempotency_key_invalid"))
+
+    def test_a_key_at_the_cap_is_accepted(self):
+        self.assertEqual(self._begin("x" * fb.idem.IDEM_MAX_KEY_LEN)[0],
+                         "proceed")
+
+    def test_an_over_long_key_persists_nothing(self):
+        self._begin("x" * 500)
+        self.assertEqual(fb.idem._records, {})
+
+    # ---- (c) device namespacing
+
+    def test_two_devices_using_the_same_key_do_not_collide(self):
+        # A reserves and settles KEY-A; B's KEY-A is a DIFFERENT record, so B
+        # proceeds on its own rather than replaying A's stored response.
+        self.assertEqual(self._begin("KEY-A", device=self.DEV_A)[0], "proceed")
+        fb.idem.complete("KEY-A", 200, {"who": "A"}, device=self.DEV_A)
+        self.assertEqual(self._begin("KEY-A", device=self.DEV_B)[0], "proceed")
+
+    def test_the_same_device_still_replays_its_own_key(self):
+        self._begin("KEY-A", device=self.DEV_A)
+        fb.idem.complete("KEY-A", 200, {"who": "A"}, device=self.DEV_A)
+        self.assertEqual(self._begin("KEY-A", device=self.DEV_A),
+                         ("replay", (200, {"who": "A"})))
+
+    def test_a_device_cannot_replay_the_loopback_response(self):
+        # loopback (no device) reserves and settles; a device with the same key
+        # and body gets its own reservation, never loopback's stored body.
+        self._begin("K")
+        fb.idem.complete("K", 200, {"who": "loopback"})
+        self.assertEqual(self._begin("K", device=self.DEV_A)[0], "proceed")
+
+    def test_a_device_key_is_stored_under_its_own_namespace(self):
+        self._begin("KEY-A", device=self.DEV_A)
+        # not under the raw header, but under the device-scoped composite key.
+        self.assertNotIn("KEY-A", fb.idem._records)
+        self.assertIn("aaaa1111\x00KEY-A", fb.idem._records)
+
+    # ---- (b) the count cap
+
+    def test_the_count_cap_evicts_the_oldest(self):
+        saved = fb.idem.IDEM_MAX_RECORDS
+        fb.idem.IDEM_MAX_RECORDS = 10
+        try:
+            for i in range(40):
+                # distinct keys, ascending ts so eviction order is defined; all
+                # inside the TTL, so ONLY the count cap can evict here.
+                self._begin(f"k{i:03d}", now=T0 + i)
+            # bounded far below the 40 inserted — the cap, plus at most the one
+            # record added after the last eviction pass.
+            self.assertLessEqual(len(fb.idem._records),
+                                 fb.idem.IDEM_MAX_RECORDS + 1)
+            self.assertLess(len(fb.idem._records), 40)
+            self.assertIn("k039", fb.idem._records)      # newest kept
+            self.assertNotIn("k000", fb.idem._records)   # oldest evicted
+        finally:
+            fb.idem.IDEM_MAX_RECORDS = saved
+
+
+class TestOverLongKeyOnTheWire(IdemBase):
+    """The do_POST edge: a keyed mutation with an over-long key is refused with
+    a real 400, and its handler never runs."""
+
+    def setUp(self):
+        super().setUp()
+        self._start_dispatch = fb.dispatch.start_dispatch
+
+    def tearDown(self):
+        fb.dispatch.start_dispatch = self._start_dispatch
+        super().tearDown()
+
+    def test_a_wire_mutation_with_an_over_long_key_is_refused(self):
+        calls = []
+        fb.dispatch.start_dispatch = lambda *a, **k: calls.append(a) or {"ok": True}
+        body = b'{"mission": "x"}'
+        h = _handler("/api/dispatch", body=body, Content_Length=str(len(body)),
+                     Idempotency_Key="x" * 200)
+        h.do_POST()
+        status, _hdrs, payload = _parse(h)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "idempotency_key_invalid")
+        self.assertEqual(calls, [])              # the handler never ran
+        self.assertFalse(fb.idem.IDEM_STORE.exists())
+
+
 def fb_now():
     import time
     return time.time()

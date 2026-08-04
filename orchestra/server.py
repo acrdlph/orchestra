@@ -828,7 +828,8 @@ class Handler(BaseHTTPRequestHandler):
             if keyed:
                 verdict, data = idem.begin(
                     key, "POST", route, payload,
-                    _idem_issued_at(self.headers, payload), time.time())
+                    _idem_issued_at(self.headers, payload), time.time(),
+                    device=getattr(self, "device", None))
                 if verdict == "reject":
                     st, code, message, extra = data
                     self._idem_reject(st, code, message, extra)
@@ -904,7 +905,8 @@ class Handler(BaseHTTPRequestHandler):
                                                  # is unserialisable it settles
                                                  # the key as a 500, not a 200
             if keyed:
-                idem.complete(key, 200, result)
+                idem.complete(key, 200, result,
+                              device=getattr(self, "device", None))
                 idem_settled = True
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -929,7 +931,8 @@ class Handler(BaseHTTPRequestHandler):
             # the other side — a success whose write failed keeps its stored 200.
             if proceeded and not idem_settled:
                 try:
-                    idem.complete(key, 500, err)
+                    idem.complete(key, 500, err,
+                                  device=getattr(self, "device", None))
                 except Exception:
                     pass
             if not getattr(self, "_answered", False):
