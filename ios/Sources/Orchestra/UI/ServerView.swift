@@ -50,6 +50,7 @@ public struct ServerView: View {
                         notifications
                         stream
                         freshness
+                        about
                         // In the demo this is the pairing door, and it is
                         // deliberately the one place a reviewer looking for
                         // "how do I connect a real Mac" would look.
@@ -236,6 +237,34 @@ public struct ServerView: View {
                 hue: age > 120 ? Palette.statusLimit : nil)
         } else {
             Row(name, "—")
+        }
+    }
+
+    /// The source and the privacy policy, reachable from inside the app — App
+    /// Review guideline 5.1.1 wants the policy one tap away, not only in the
+    /// store listing. Both are the open-source repo; the policy is honest
+    /// because there is nothing to collect (PRIVACY.md).
+    private var about: some View {
+        Block("ABOUT") {
+            linkRow("privacy policy",
+                    "https://github.com/acrdlph/orchestra/blob/main/PRIVACY.md")
+            linkRow("source", "https://github.com/acrdlph/orchestra")
+        }
+    }
+
+    private func linkRow(_ title: String, _ urlString: String) -> some View {
+        Link(destination: URL(string: urlString)!) {
+            HStack(spacing: Space.sm) {
+                Text(title)
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.statusFree)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(OrcFont.meta)
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(.rect)
         }
     }
 }

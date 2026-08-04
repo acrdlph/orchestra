@@ -512,51 +512,40 @@ rather than growing the notes past 4000.
 
 ## before you can submit at all
 
-Two of these are genuine blockers. They are listed in the order they will bite.
+> **2026-08-04 — cleared.** Every engineering blocker below is done. What is
+> left is the two things only a person with the account can do: **buy/confirm
+> the Apple Developer membership** and **create the app record + enter the ASC
+> Issuer ID** (§9). The `.p8` key is already on the Mac; `ios/release.sh upload`
+> does the rest.
 
-### blocker 1 — the ATS exception hard-codes one person's tailnet address
+### blocker 1 — the ATS exception hard-coded one tailnet address — FIXED
 
-`ios/Orchestra-Info.plist` currently contains:
+The plist no longer pins any IP; it ships only the `ts.net` exception. The
+server advertises the Mac's **MagicDNS name** wherever the phone is handed an
+address (`pairing.advertised` / `tailnet.dns_name`), which that one exception
+covers for every user. A tailnet with MagicDNS switched off pairs by IP and a
+store build refuses it by design — the supported path is Tailscale's default.
+(ADR-0013 addendum.)
 
-```xml
-<key>100.113.110.31</key>
-<dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
-```
+### blocker 2 — no app icon — FIXED
 
-That is *this* Mac's tailnet address. Every other user has a different one, and
-**ATS domain exceptions do not apply to URLs whose host is an IP literal**, so a
-shipped build would work for exactly one person and silently fail to connect for
-everyone else. The plist comment already says this is "the one line of this
-project that has to change when the Mac's tailnet address does" — App Store
-distribution is when that comes due.
+`ios/App/Assets.xcassets` carries the 1024×1024 `AppIcon` (light/dark/tinted),
+`AccentColor`, and a `LaunchBackground` the launch screen uses. Rendered
+reproducibly by `ios/icon/render_icon.swift`, looked at on the home screen.
 
-The fix is on the server side, not the app side: the pairing QR must advertise
-the Mac's **MagicDNS name** (`<host>.<tailnet>.ts.net`), which the existing
-`ts.net` + `NSIncludesSubdomains` exception already covers for every user.
-`pairing._server_facts` reports the *bound address* today, which is an address.
-Then delete the IP entry.
+### the rest — all done
 
-Ship a build with that IP entry and the App Store version of the app is broken
-for its entire audience. Do not.
-
-### blocker 2 — no app icon
-
-`docs/mobile/PRODUCTION-READINESS.md` §5: there is no `.xcassets`. A 1024×1024
-icon with no alpha channel and no transparency is mandatory for TestFlight and
-for the App Store, and the upload is rejected at the ingest step without it.
-
-### the rest
-
-| item | state | note |
-|---|---|---|
-| Apple Developer Program membership | required | $99/yr; also required for the APNs key you already have |
-| `MARKETING_VERSION` | `0.1` → `1.0` | App Store Connect will not accept `0.1` as a first public version comfortably |
-| `ITSAppUsesNonExemptEncryption` | absent | add `false` (§6) so the encryption question stops appearing per-upload |
-| in-app privacy policy link | absent | 5.1.1 wants the policy reachable *from inside the app*. Add a row on the Server screen linking to `PRIVACY.md`. One `Link()`; the app has no web view and does not need one — `openURL` hands it to Safari |
-| demo fleet entry point | in progress | another agent; the review notes and screenshots both depend on the exact label `explore the demo fleet` |
-| screenshots | separate job | 6.9" (iPhone 17 Pro Max) is the only *required* size; 6.5" optional. Take them in demo mode |
-| launch screen | present but empty (`UIColorName` is `""`) | check it renders as intended, not as a white flash in a dark app |
-| iOS CI | absent | PRODUCTION-READINESS §6 — not a submission blocker, but a Swift regression currently reaches the store unchallenged |
+| item | state |
+|---|---|
+| Apple Developer Program membership | **still required of you** — $99/yr; also owns the APNs key |
+| `MARKETING_VERSION` | **`1.0`** on both configurations |
+| `ITSAppUsesNonExemptEncryption` | **`false`** in the plist (§6), so the encryption question never reappears |
+| in-app privacy policy link | **done** — an ABOUT block on the Server screen links `PRIVACY.md` and the source (5.1.1) |
+| demo fleet entry point | **done** — `explore the demo fleet` on the pairing screen, above the Face ID gate; 27 tests |
+| screenshots | **done** — the 6.9" set in `docs/mobile/appstore-screenshots/`, shot from demo mode |
+| launch screen | **fixed** — `UIColorName` is `LaunchBackground` (the canvas token), no white flash |
+| iOS CI | **done** — `.github/workflows/ios.yml`, `swift test` + simulator build on push |
+| release/upload pipeline | **done** — `ios/release.sh` archives, App-Store-signs, exports a validated production-push `.ipa`, and uploads given `ASC_ISSUER_ID` |
 
 ---
 
