@@ -11,6 +11,10 @@ unlink and auth decision it can reach.
 This is the artifact the review itself noted was missing. Each finding carries
 its disposition; the commit that closed it is named where one exists.
 
+**Status: every finding is closed or accepted with a stated reason.** C1, H1,
+M2, M3, L2, L3, L4 and L7 are fixed and tested; L1, L5, L6, L8 are accepted risk
+(reasons below). Nothing is left open without a decision.
+
 ## Critical
 
 **C1 — stored XSS at the board's own origin, via `esc()`-only escaping inside
@@ -32,42 +36,49 @@ layer handles).
 
 ## High
 
-**H1 — side-effecting GETs are outside the cross-site guard.** The CSRF
-content-type check runs only for non-GET; a tag-initiated cross-site GET
+**H1 — side-effecting GETs are outside the cross-site guard. FIXED — `2e3aa28`.**
+The CSRF content-type check ran only for non-GET; a tag-initiated cross-site GET
 (`<img>`, `<script>`) sends no `Origin`, so `/api/focus` (osascript / attaches a
 terminal to a fleet agent), `/api/events` (holds an SSE slot; 32 exhaust
-`sse_max_subscribers`; unaudited) and `/api/limits?refresh=1` (spawns cclimits)
-are reachable from any page the user visits. *Disposition: delegated to the
-server-side batch — require a `Sec-Fetch-Site` same-origin signal (a forbidden
-header JS cannot forge) on the acting GETs, plus audit coverage for
-`/api/events`.*
+`sse_max_subscribers`; was unaudited) and `/api/limits?refresh=1` (spawns
+cclimits) were reachable from any page the user visits. Closed: `_acting_get`
+names those routes and `browser_guards` requires `Sec-Fetch-Site` ∈
+{same-origin, same-site, none} for them (a forbidden header JS cannot forge); a
+present-and-cross-site header is 403 `CROSS_SITE`, an absent header passes
+(reaching the guard already means loopback trust or a valid token). `/api/events`
+opens are now audited.
 
 ## Medium
 
-- **M2 — `_under_admin` decides on the raw path.** `…/devices/self/../<id>/revoke`
-  classifies as self-service because the `SELF_SUBTREE` carve-out matches the
-  un-normalized path first. Latent (do_POST exact-matches today), but one router
-  edit from live — the `/api/v1/devicesX` incident's twin. *Delegated: refuse
-  `..`, `//`, `%2f` before the subtree test, fail-safe to admin-required.*
-- **M3 — idempotency store unbounded and un-namespaced.** `Idempotency-Key` taken
-  verbatim (no length cap), `_records` uncapped, `_save()` rewrites the whole
-  file per begin/complete, and records key on the header alone — so a device can
-  squat another's key or replay its stored response with an identical body.
-  *Delegated: cap key length, bound the store, namespace the fingerprint by
-  device.*
+- **M2 — `_under_admin` decides on the raw path. FIXED — `804ab8a`.**
+  `…/devices/self/../<id>/revoke` classified as self-service because the
+  `SELF_SUBTREE` carve-out matched the un-normalized path first. Any path with
+  `..`, `//` or `%2f`/`%2F` is now admin-required (fail-safe) before the subtree
+  test.
+- **M3 — idempotency store unbounded and un-namespaced. FIXED — `a40641d`.** Keys
+  over 128 chars are refused (`idempotency_key_invalid`), `_records` gets a hard
+  4096 LRU cap on top of the TTL, and the record key is namespaced by
+  authenticated device (`<device-id>\x00<key>`) so one device cannot squat or
+  replay another's — while same-device same-body still replays.
 
 ## Low — dispositions
 
-- **L2 — advertise only a validated MagicDNS name.** *Delegated: require
-  `^[a-z0-9][a-z0-9.-]*\.ts\.net$` inside `tailnet.dns_name` before advertising.*
-- **L3 — validate `sid` in resume.** The resume path globs `*/{sid}.jsonl` with
-  no charset check, unlike `/api/chat`. *Delegated: same `[0-9a-fA-F-]+` guard.*
+- **L2 — advertise only a validated MagicDNS name. FIXED — `b692a76`.**
+  `tailnet.dns_name` now returns a name only if it matches
+  `^[a-z0-9][a-z0-9.-]*\.ts\.net$`. (Landed by the main loop, not the batch,
+  which branched before `dns_name`/`pairing.advertised` existed.)
+- **L3 — validate `sid` in resume. FIXED — `6afdd6b`.** `schedule_resume`
+  validates the sid before it reaches the `*/{sid}.jsonl` glob. The charset is
+  the superset `[0-9A-Za-z-]+` rather than `/api/chat`'s exact `[0-9a-fA-F-]+`:
+  identical for every real (hex-UUID) sid and it blocks all glob/path
+  metacharacters, but the codebase's non-hex sid stand-ins (`s1`, `s-alpha`)
+  keep working. *Second-look item if strict hex is preferred.*
 - **L4 — a bare CR was typed as an early Return. FIXED — `5d244a7`.** The send
   collapsed `\n` runs but not a lone `\r`, which reached the terminal as a
   submit and split one message into two. Now collapses any CR/LF run.
-- **L7 — strip CR/LF from curl `--config` values in `push.py`.** Safe today; a
-  standing guard so a future `\n` in an interpolated value cannot become an
-  arbitrary curl directive. *Delegated.*
+- **L7 — strip CR/LF from curl `--config` values in `push.py`. FIXED —
+  `5e287d8`.** A standing guard (`_cfg_value`) so a future `\n` in an
+  interpolated value cannot become an arbitrary curl directive.
 - **L1 — `clean_scratch` writes one audit line per removed file (unbounded).**
   Accepted: evidence is not buried (`tail_lines` reads across segments) and the
   7-day floor bounds nothing here — volume only, behind an authenticated device.
