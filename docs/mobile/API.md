@@ -2107,77 +2107,126 @@ consistent.
 
 ### 9.11 `GET /api/v1/sessions/{sid}/messages`
 
-**Auth:** Bearer, `read`. **Headers:** `If-None-Match` honoured.
+> **BUILT 2026-08-04** (`orchestra/sessionlog.py`), and what shipped differs from what this
+> section originally specified. The text below describes the **wire**; the deviations and
+> their reasons are listed at the end. Driven against a real 103 MB transcript.
+
+**Auth:** the normal guard — loopback trusted, otherwise `Authorization: Bearer orc1_…`. It is
+a **read**, so it is deliberately *not* in `auth._acting_get` and requires no `Sec-Fetch-Site`.
+`sid` must match `[0-9a-fA-F-]+` and is validated **before** it reaches a filesystem glob.
 
 **Query parameters**
 
 | Param | Type | Default | Meaning |
 |---|---|---|---|
-| `limit` | int 1–200 | 40 | how many messages |
-| `before` | cursor | — | page backwards from this message (exclusive) |
-| `after` | cursor | — | page forwards from this message (exclusive) |
-| `format` | `clean` \| `raw` | `clean` | see below |
-
-`before` and `after` are mutually exclusive; supplying both is `400 bad_query`.
+| `account` | string, **required** | — | Claude-home label, percent-decoded (`side%20project` → `side project`) |
+| `limit` | int 1–200 | 60 | how many messages |
+| `before` | int byte offset | end of file | page backwards from this line (**exclusive**) |
+| `format` | `raw` \| `clean` | `raw` | see below |
 
 `200`:
 
 ```json
 {
-  "session_id": "9d4db7b2-3e1f-4a7c-b0d2-8f11ac9e5520",
-  "account": "account8",
-  "worktree_id": "wt_3f9a2b1c7d04",
-  "format": "clean",
+  "ok": true,
+  "sid": "60971837-96cb-4ffd-8a16-54785df01e2b",
+  "account": "account6",
+  "format": "raw",
   "messages": [
-    {"cursor": "eyJvIjozNjcwMDE2LCJpIjoyLCJnIjo3NzMxfQ",
-     "role": "you", "at": 1784636334.076,
-     "text": "keep the 3.11 job, drop 3.10", "truncated": false},
-    {"cursor": "eyJvIjozNjcwNDIyLCJpIjowLCJnIjo3NzMxfQ",
-     "role": "agent", "at": 1784636341.201,
-     "text": "Should I drop the legacy workflow file or keep it behind a flag? Dropping it removes the 3.10 job entirely…",
-     "truncated": false}
+    {"off": 103830650, "i": 0, "role": "assistant",
+     "text": "Close-out complete — with step 3 deliberately not executed…\n\n**Nothing was landed…**",
+     "truncated": false, "chars": 1409, "ts": "2026-07-20T20:51:45.295Z",
+     "meta": false, "model": "claude-fable-5"},
+    {"off": 103833827, "i": 0, "role": "system",
+     "text": "The visual-coverage testing program is complete…",
+     "truncated": false, "chars": 239, "ts": "2026-07-20T21:44:14.841Z",
+     "meta": true, "model": null, "why": "system"}
   ],
   "has_more_before": true,
-  "next_before": "eyJvIjozNjcwMDE2LCJpIjoyLCJnIjo3NzMxfQ",
-  "next_after": "eyJvIjo0MTk0MzA0LCJpIjoxNCwiZyI6NzczMX0"
+  "cursor_before": 103830650,
+  "file": {"size": 103839151, "ino": 282207643, "dev": 16777229,
+           "mtime_ns": 1784585365530498996}
 }
 ```
 
-**Cursor:** base64url of `{"o": <byte offset of the JSONL line>, "i": <index within the
-line>, "g": <low bits of the file inode>}`. Transcripts are append-only, so offsets remain
-valid. There is **no absolute sequence number**: computing one would require reading the
-file from byte 0, and these files reach many megabytes.
+**Identity is `(off, i)`, not `off`.** `off` names a JSONL *line*; one `assistant` line
+routinely carries a thinking block, prose and several `tool_use` blocks, so `i` (the block
+index) is what makes a message unique. `i` counts blocks rather than emitted messages, so it
+is stable across `format`.
 
-If a cursor's offset exceeds the file size, or its inode marker does not match, the file was
-truncated or rotated → **`410 cursor_invalid`**. Reset the thread; do not silently render
-wrong messages.
+**Paging.** `cursor_before` is the `off` of the oldest message returned; pass it as `?before=`
+for the previous page. It is exclusive, so nothing arrives twice and nothing is skipped. **A
+page never splits a line**, so it may return fewer than `limit` — the one exception is a single
+line carrying more blocks than `limit`, which is returned whole rather than freezing the cursor
+on an empty page. `has_more_before: false` means byte 0 was reached, and it fires exactly once
+per walk. There is **no absolute sequence number**: computing one means reading from byte 0, and
+these files reach 100 MB. One request reads at most 8 MB; a normal page is one 512 KB window.
+
+**Compaction, not a `410`.** A compaction rewrites the transcript and voids every offset a
+client holds. Rather than a status code, the envelope ships `file: {size, ino, dev, mtime_ns}`
+— compare `ino` **and** `dev` across polls (TRANSCRIPT-FORMAT.md: identity is `(st_dev,
+st_ino)`, not the inode alone) and reload from the newest page if either moves. `size` and
+`mtime_ns` are the cheap "has anything landed" check. This tells a client *the file was
+rewritten*, which is strictly more than "your cursor died".
 
 **`format`:**
 
 | Value | Behaviour |
 |---|---|
-| `clean` | ANSI stripped, `<tags>` under 80 chars stripped, **all whitespace including newlines collapsed to single spaces**, truncated at 900 chars with `…`. This is what the desktop board shows. Code blocks and lists arrive as one run-on line. |
-| `raw` | newlines preserved, 4000-char cap, `truncated` set when clipped. Use this for a phone chat view; `clean` destroys structure irrecoverably. |
+| `raw` (default) | newlines preserved, ANSI stripped, 4000-char cap with `truncated` set. The point of the route. |
+| `clean` | the legacy `transcripts._clean` transformation — `<tags>` under 80 chars stripped and **all whitespace including newlines collapsed** — but **without** its ellipsis. What the desktop board shows; it destroys structure irrecoverably. |
 
-`role` is exactly `"you"` | `"agent"`. Tool calls and tool results are not included.
-Sidechain and meta entries are filtered, as are slash-command stubs, `Caveat:` prefixes and
-`<system-reminder>` machine text.
+**Truncation is a field, never a character.** `truncated` is the only signal and **no ellipsis
+is ever appended**; `chars` carries the true pre-cut length, so `chars − len(text)` is what is
+hidden. Do not infer truncation from a trailing `…` — real prose ends in one, and the phone's
+legacy chat screen inferring exactly that is the false positive this replaces.
 
-**Session resolution** does **not** go through the board projection. The server maintains a
-full `sid → (account, transcript path)` index built from every Claude home before the
-per-card `max_sessions` truncation, with a live filesystem glob as a fallback. A session
-that scrolled off its card is still readable — and, critically, its armed auto-resume is
-still cancellable.
+**`role`** is the transcript's own vocabulary: `user` · `assistant` · `tool_use` ·
+`tool_result` · `system`. Tool calls and results are **included** as first-class entries —
+they are what a terminal shows, and a two-word `you`/`agent` vocabulary has nowhere to put
+them. `tool` is present only on the two tool roles: `{"name", "id", "ok"}`, where `ok` is
+`null` on a call, and `false` on a result carrying `is_error` or a `<tool_use_error>` body.
+`tool.name` is `null` — never guessed — when the matching call fell outside the read window.
 
-| Status | When |
-|---|---|
-| 200 | success |
-| 304 | `If-None-Match` matched `W/"<sid>:<total>"` |
-| 400 | `bad_query` — `limit` out of range, both `before` and `after`, bad `format` |
-| 401 / 403 | auth, lockdown |
-| 404 | `session_not_found` — no such sid in any home |
-| 410 | `transcript_pruned` (file gone), `cursor_invalid` |
-| 429 | rate limited |
+**Nothing is filtered; noise is *marked*.** `meta: true` means a client may dim or collapse the
+entry, and `why` (present only then) says which kind: `sidechain` (subagent work living in the
+main transcript — outranks every other reason), `isMeta`, `machine-text`, `thinking`,
+`summary`, `attachment`, `image` (rendered as the literal `[image]`), `system`. Tool entries
+are never `meta`. Lines that carry no text at all (`mode`, `permission-mode`, `last-prompt`,
+`ai-title`, `file-history-*`, `system/turn_duration`) emit no messages — a consequence of
+"text or nothing", not a type allowlist.
+
+### 9.11.1 `GET /api/v1/sessions/{sid}/messages/at/{off}` — one entry, uncapped
+
+Same auth and `account`/`format` params, plus optional `i` to select a single block. Answers
+the same message objects in the same `messages` array (one decoder on the client), with the cap
+raised from 4000 chars to **256 KB**. This is the "show me the whole thing" affordance behind a
+`truncated` entry. A `tool_result` gets its tool name here from one extra bounded 512 KB
+backward window, so it matches the paged route.
+
+### Failures
+
+**The house envelope, not `/api/v1`'s status codes:** every refusal is `200` with
+`{"ok": false, "error": "<string>"}`, exactly as `/api/chat` answers an unknown account —
+because these routes replace that one on the phone, and a client that branches on the status
+line must not break on the switchover. The strings: `unknown account <name>`,
+`transcript not found`, `need account & sid`, `bad sid`, `bad limit`, `bad before`,
+`bad format`, `bad off`, `bad i`, `no entry at that offset`, `unknown route`.
+
+Real statuses still apply where they are the door's, not the route's: `401`/`403`/`429` from
+auth, and a genuine `404` for a path outside the segment (`/api/v1/sessionsX/…`).
+
+### Deviations from this section as originally specified
+
+| # | spec said | what shipped, and why |
+|---|---|---|
+| 1 | base64url cursor `{o,i,g}` | plain int `off` + `i`, with `file.ino`/`dev` in the envelope. The offset *was* the payload; this is the same information with nothing to decode, and it makes `/messages/at/{off}` a legible URL. |
+| 2 | `400`/`404`/`410` | the house `{"ok": false}` at 200 — see Failures above. |
+| 3 | `format` defaults to `clean` | defaults to `raw`. `clean` was the reason the phone could not see its own transcript. |
+| 4 | `role` is `you`/`agent`; tools, sidechain and meta filtered out | the transcript's vocabulary, tools included, noise marked rather than dropped. Deliberate reversal: the ask was to see what a terminal shows. |
+| 5 | `limit` default 40 | 60. |
+| 6 | `after`, `If-None-Match`/`304` | not built. A forward cursor needs a different window strategy, and the ETag needs a total this module never computes. `file.size`/`mtime_ns` already answer "anything new?". `after` is a small addition if a live-tail client wants it. |
+| 7 | — | added `i` (uniqueness), `why` (so a client can collapse *differently*, not uniformly), `dev` (identity is `(st_dev, st_ino)`), and `format` echoed in the envelope. |
 
 ---
 
