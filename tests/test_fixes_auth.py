@@ -320,5 +320,35 @@ class TestActingGetsAreCrossSiteGuarded(FixCase):
                          ("/api/events", "allow"))
 
 
+# --------------------------------------------- M2: _under_admin on the raw path
+
+class TestAdminDecidesOnRawPath(FixCase):
+    """`_under_admin` decides on the RAW request path, so a traversal that slips
+    under the `self` carve-out must fail safe to admin, never self-service — the
+    twin of the `/api/v1/devicesX` incident."""
+
+    def test_a_traversal_under_self_is_not_self_service(self):
+        # matches SELF_SUBTREE + "/" by prefix, yet addresses another device's
+        # revoke; before the fix this classified as self and returned False.
+        p = "/api/v1/devices/self/../aabbccdd/revoke"
+        self.assertTrue(fb.auth._under_admin(p))
+        self.assertTrue(fb.auth.admin("POST", p))
+
+    def test_a_double_slash_is_admin_required(self):
+        self.assertTrue(fb.auth._under_admin("/api/v1/devices//self"))
+
+    def test_a_percent_encoded_slash_is_admin_required(self):
+        self.assertTrue(
+            fb.auth._under_admin("/api/v1/devices/self%2f..%2faabbccdd/revoke"))
+        self.assertTrue(
+            fb.auth._under_admin("/api/v1/devices/self%2F../x/revoke"))
+
+    def test_a_clean_self_route_is_still_self_service(self):
+        # the guard must not have swallowed the legitimate self subtree.
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self"))
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self/push"))
+        self.assertFalse(fb.auth._under_admin("/api/v1/devices/self/settings"))
+
+
 if __name__ == "__main__":
     unittest.main()

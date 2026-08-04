@@ -971,7 +971,19 @@ def _under_admin(path):
     `/api/v1/devices/self/*` is explicitly NOT admin — see `SELF_SUBTREE`. The
     check is segment-exact for the same reason the ADMIN check is: a substring
     test would let `/api/v1/devices/selfish` masquerade as self-service.
+
+    A path that is not in normal form is admin-required BEFORE the self carve-out
+    is even considered — the twin of the `/api/v1/devicesX` incident. This
+    function decides on the RAW request path (never a normalised one), so
+    `/api/v1/devices/self/../aabbccdd/revoke` would match the SELF_SUBTREE prefix
+    and be classified self-service, yet it ADDRESSES another device's revoke. A
+    `..`, a `//`, or a percent-encoded slash (`%2f`) is never in a legitimate
+    route here, so treating any of them as admin (fail safe — a refusal, never a
+    self grant) costs a real caller nothing. Latent today (`do_POST` exact-
+    matches the revoke route), pinned so it cannot wake up behind a future route.
     """
+    if ".." in path or "//" in path or "%2f" in path.lower():
+        return True
     if path == SELF_SUBTREE or path.startswith(SELF_SUBTREE + "/"):
         return False
     return any(path == p or path.startswith(p + "/") for p in ADMIN)
