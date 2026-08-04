@@ -68,6 +68,15 @@ that spend money. That raises the bar for everything that can reach it.
 
 8. **Home Screen / Lock Screen widget** — "who needs me" at a glance without opening the app.
 9. **Live Activity** — a running mission on the lock screen, updating live.
+9b. **The full log.** **Built** — `GET /api/v1/sessions/{sid}/messages` (`sessionlog.py`,
+    API.md §9.11) serves the transcript newline-intact, tool calls and results included, with a
+    real `truncated` flag and byte-offset paging that never reads a 100 MB file whole; the phone
+    renders it in `UI/TranscriptView.swift` with prose open, tool traffic folded, noise behind a
+    toggle, and a `show all` that actually fetches. This is what `/api/chat`'s 900-character cut
+    could never be, and it closes the "show full that fetches nothing" defect on the chat screen.
+9c. **Composer draft persistence** (UX.md §3.5). **Built** — `Store/DraftStore.swift`, debounced
+    and flushed on background, so the mission survives the biometric re-lock that tears the
+    paired subtree down, and an app kill. It re-presents the sheet within 24 h.
 10. **Notification polish** — snooze, quiet-hours UI, per-event-type preferences and thread-id
     grouping **shipped** (`Model/PushSettings.swift`, `/api/v1/push/mute`); a post-wake
     suppression now stops a lid-open buzzing the phone with the night's backlog
