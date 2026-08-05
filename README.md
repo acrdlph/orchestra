@@ -244,6 +244,24 @@ python3 -m orchestra [--root DIR]... [--pattern REGEX] [--home DIR]...
 | `--prune-logs` | — | rotate/reap **orchestra's own** logs; never touches `~/.claude*` — then exit |
 | `--demo` | — | fictional data (screenshots, kicking the tires) |
 
+### Opening it on another computer
+
+`--tailnet` and a device token are for clients that can set a header — the iOS
+app, `curl`. A **browser** on a second machine is not one of them: the board
+sends no `Authorization` header of its own, so it works on loopback trust and
+nothing else. Reach it with an SSH forward, which needs no flag and no token
+here because the request arrives on this machine's own loopback:
+
+```bash
+ssh -f -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+    -L 4242:localhost:4242 you@board-host.your-tailnet.ts.net   # → http://localhost:4242
+```
+
+`contrib/orchestra-tunnel.sh` wraps that as `up`/`down`/`restart`/`status` for
+when it stops being a one-off. [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md)
+covers which mechanism suits which client, checking liveness without
+credentials, keeping the forward alive, and what it costs you in the audit log.
+
 ### Keeping it running (launchd, macOS)
 
 `./start.sh` is for a board you open and close. To have one waiting whenever you
@@ -583,8 +601,10 @@ dispatch (kickoff → READY → instruction → DONE).
   never what was said, and never anything token-shaped, whichever field it
   arrived in.
 
-- **To reach it from a phone, `--tailnet`.** The Tailscale address is detected
-  and then actually bound on port 0 to prove it, rather than pasted from a
+- **To reach it from a phone, `--tailnet`; from another computer's browser,
+  an SSH forward ([`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md)).** The
+  Tailscale address is detected and then actually bound on port 0 to prove
+  it, rather than pasted from a
   stale document; if Tailscale is down you get one of three sentences saying
   which failure it is, not `EADDRNOTAVAIL`. `--host 0.0.0.0` is refused and
   names `--tailnet` in the refusal — the escape hatch is
