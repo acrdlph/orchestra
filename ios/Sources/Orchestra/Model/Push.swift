@@ -37,8 +37,13 @@ public struct PushMessage: Sendable, Equatable {
     public let dedupeKey: String?
     /// `at` — the epoch the edge was derived. Absolute, never a duration.
     public let at: Double?
-    /// `wt` — the worktree the event is about. Null for account-level events
-    /// (`account.limit_hit`), which is why the deep link degrades to the board.
+    /// `wt` — the worktree the event is about, as the qualified card KEY
+    /// `<node>/<worktree>` since ADR 0016 (`notify.project` keys its projection
+    /// with `node.card_key`, and the payload's `worktree` field follows it). It
+    /// flows into the deep link and the reply target as-is — `FleetRoute`
+    /// expects the key, and `/api/send` accepts it. Null for account-level
+    /// events (`account.limit_hit`), which is why the deep link degrades to the
+    /// board.
     public let worktree: String?
     /// `sid` — the session. **The only address inline reply has** — the payload
     /// carries no account, and it does not need to: `/api/send` resolves a bare
@@ -155,8 +160,9 @@ public enum PushCategory {
 }
 
 /// Where a notification tap navigates. Expressed in the payload's own addresses
-/// — a worktree and maybe a session — because the account the chat screen needs
-/// is not on the wire and is resolved from the board later.
+/// — a worktree (the qualified card KEY) and maybe a session — because the
+/// account the chat screen needs is not on the wire and is resolved from the
+/// board later.
 ///
 /// A pure value in the non-UI module so it can be tested; the UI maps it to a
 /// `FleetRoute` once it can look the account up.
@@ -176,6 +182,8 @@ public struct PushDeepLink: Sendable, Equatable, Hashable {
 
 /// The address an inline reply is sent to. `account` is intentionally not here:
 /// the notification never carried one and `/api/send` does not need it.
+/// `worktree` is the qualified card key, riding along exactly as the payload
+/// carried it — the acting routes accept it in their existing parameter.
 public struct PushReplyTarget: Sendable, Equatable {
     public let sid: String
     public let worktree: String?

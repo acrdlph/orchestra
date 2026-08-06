@@ -572,6 +572,17 @@ class Snapshot:
     sweep_ms:   float
 ```
 
+> **ADR 0016 Phase 0 (2026-08-06) — the collector split reached this structure.** As built,
+> `cards` keys on the qualified card key `<node>/<worktree>`, never the bare name (two
+> machines can each hold a `ConfidAI2` — [`NODES.md`](NODES.md) §2), and `Snapshot` carries a
+> fourth composed term, `nodes` (`{node_id: {label, hostname, user}}`), which §3.2's no-bump
+> equality gained and every frame ships whole. Everything that iterates or diffs `snap.cards`
+> — the history ring, §8's notifier sketch, §4.7's `(target, transition)` push-dedup pair —
+> inherits the qualified key with no further rule. Where the unbuilt `Intent` sketch below
+> writes `"wt:voyager-cli"`, read `wt:<node>/<worktree>` (sids stay bare). §2.6's
+> `target_key` lease grammar is NOT touched: leases guard node-local actuation, which keeps
+> bare names inside the node that owns it (NODES.md §4). The sketches are otherwise as built.
+
 ```python
 @dataclass
 class Intent:

@@ -1,6 +1,7 @@
 # ADR 0016 — one board, many collectors
 
-**Status:** accepted, unbuilt. Supersedes nothing; extends ADR 0006 (observation is
+**Status:** accepted; Phase 0 built 2026-08-06 against [`NODES.md`](../NODES.md).
+Supersedes nothing; extends ADR 0006 (observation is
 continuous) and ADR 0001 (transport is Tailscale).
 
 ## The ask

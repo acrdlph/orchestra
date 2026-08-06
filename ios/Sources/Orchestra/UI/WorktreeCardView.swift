@@ -13,6 +13,10 @@ struct WorktreeCardView: View {
     let section: BoardSection
     let now: Date
     let resumes: [ResumeSchedule]
+    /// The node id, or nil on a single-node board (NODES.md §7): the badge
+    /// exists only when a second node makes the bare name ambiguous, so a
+    /// single-machine board renders exactly as it did before the split.
+    var nodeBadge: String? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -70,6 +74,9 @@ struct WorktreeCardView: View {
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let nodeBadge, !nodeBadge.isEmpty {
+                    NodeBadge(nodeBadge)
+                }
                 Spacer(minLength: Space.xs)
                 if !card.liveProcs.isEmpty {
                     Text(verbatim: "\(card.liveProcs.count)")
@@ -164,5 +171,28 @@ struct WorktreeCardView: View {
         .padding(.vertical, Space.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.sunkenDim)
+    }
+}
+
+/// The node chip — the node id in the app's quiet chip style (NODES.md §7).
+/// Drawn ONLY on a multi-node board; every call site owns that guard, because
+/// the rule is about the BOARD, not about the card in hand.
+struct NodeBadge: View {
+    let node: String
+
+    init(_ node: String) { self.node = node }
+
+    var body: some View {
+        Text(node)
+            .font(OrcFont.meta)
+            .foregroundStyle(Palette.textTertiary)
+            .lineLimit(1)
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
+                    .fill(Palette.raised)
+            )
+            .accessibilityLabel("on node \(node)")
     }
 }

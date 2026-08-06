@@ -234,8 +234,10 @@ class MapLookupKeyAgreement(unittest.TestCase):
 
     def test_source_keys_lookup_on_raw_name_and_writes_esc_attribute(self):
         src = MAP.read_text()
-        # both node builders (branches + riders) key on the raw name now
-        self.assertEqual(src.count("const key = `b:${b.worktree}`;"), 2)
+        # both node builders (branches + riders) key on the raw qualified key
+        # now — branchKey derives `<node>/<worktree>` (ADR 0016), unescaped
+        self.assertEqual(src.count("const key = `b:${branchKey(b)}`;"), 2)
+        self.assertNotIn("const key = `b:${esc(branchKey(b))}`;", src)
         self.assertNotIn("const key = `b:${esc(b.worktree)}`;", src)
         # and the attribute is the escaped one
         self.assertIn('data-key="${esc(key)}"', src)

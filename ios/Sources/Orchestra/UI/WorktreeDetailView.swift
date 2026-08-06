@@ -10,6 +10,8 @@ import SwiftUI
 /// worktree disappears from the fleet the screen says so rather than showing the
 /// last thing it knew as if it were still true.
 public struct WorktreeDetailView: View {
+    /// The card KEY `<node>/<worktree>` (ADR 0016) — what the route carries and
+    /// what every store keys on. Display derives the bare name from the card.
     private let name: String
     @Bindable private var store: FleetStore
     @Bindable private var actions: ActionsStore
@@ -48,13 +50,21 @@ public struct WorktreeDetailView: View {
     }
 
     private var card: Worktree? {
-        store.state?.worktrees.first { $0.name == name }
+        store.state?.worktrees.first { $0.id == name }
     }
 
+    /// Schedules for THIS card: `worktree` on the wire is the qualified key,
+    /// and so is `name`, so the join is byte-for-byte.
     private var resumes: [ResumeSchedule] {
         (store.state?.resumes ?? [:]).values
             .filter { $0.worktree == name && $0.status == "pending" }
             .sorted { ($0.dueAt ?? 0) < ($1.dueAt ?? 0) }
+    }
+
+    /// What the title bar shows: the bare name (NODES.md §7 — the key is
+    /// identity, not typography). Derived from the key when the card is gone.
+    private var displayName: String {
+        card?.name ?? CardKey.bareName(name)
     }
 
     public var body: some View {
@@ -68,10 +78,10 @@ public struct WorktreeDetailView: View {
                 // still offers to act on a worktree that is gone.
                 ContentUnavailableView("this worktree is no longer on the board",
                                        systemImage: "questionmark.folder",
-                                       description: Text(verbatim: name))
+                                       description: Text(verbatim: displayName))
             }
         }
-        .navigationTitle(name)
+        .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .onReceive(ticker) { now = $0 }
         .sheet(isPresented: $finishing) {
@@ -228,7 +238,14 @@ public struct WorktreeDetailView: View {
 
     private func identity(_ card: Worktree) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            StatusPill(Triage.section(for: card))
+            HStack(spacing: Space.sm) {
+                StatusPill(Triage.section(for: card))
+                // The node, ONLY on a multi-node board (NODES.md §7) — the
+                // single-machine screen renders exactly as it did.
+                if store.state?.multiNode == true, !card.node.isEmpty {
+                    NodeBadge(card.node)
+                }
+            }
             Text(card.git.branch)
                 .font(OrcFont.code)
                 .foregroundStyle(Palette.statusFree)
@@ -403,7 +420,7 @@ public struct WorktreeDetailView: View {
             }
             Spacer(minLength: 0)
             Button {
-                Task { await actions.resumeNow(worktree: card.name, session: session) }
+                Task { await actions.resumeNow(worktree: card.key, session: session) }
             } label: {
                 Label(ready ? "Resume now"
                             : "Resume at \(resets.map { RelativeTime.clock($0) } ?? "—")",
@@ -418,7 +435,7 @@ public struct WorktreeDetailView: View {
         }
         .padding(.horizontal, Space.md)
         .background(Palette.sunken)
-        if let reply = actions.notice(worktree: card.name, sid: session.sid) {
+        if let reply = actions.notice(worktree: card.key, sid: session.sid) {
             ServerSays(reply.text, tone: reply.ok ? .ok : .refusal)
                 .padding(.horizontal, Space.md)
                 .padding(.bottom, Space.sm)

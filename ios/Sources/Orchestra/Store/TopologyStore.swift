@@ -9,8 +9,9 @@ import Observation
 /// `GET /api/topology` is ~90 git subprocesses behind a 30 s server cache; a
 /// phone polling it is the measured desktop pathology. So this fetches exactly
 /// twice: on appear, and on an explicit pull-to-refresh. The tips' status colours
-/// do NOT come from here — they ride the board's state stream, joined by
-/// worktree name, so a live status change recolours a tip with no topology fetch.
+/// do NOT come from here — they ride the board's state stream, joined by the
+/// branch key `<node>/<worktree>` (ADR 0016), so a live status change recolours
+/// a tip with no topology fetch.
 @MainActor
 @Observable
 public final class TopologyStore {
@@ -101,10 +102,11 @@ public final class TopologyStore {
         phase = topology == nil ? .failed(error) : .loaded
     }
 
-    /// Worktree names the board knows about that the topology could not place —
-    /// the silent drop `gitrepo.branch_topology` `continue`s past (no base ref, no
+    /// Card KEYS the board knows about that the topology could not place — the
+    /// silent drop `gitrepo.branch_topology` `continue`s past (no base ref, no
     /// merge-base, bad timestamps). Surfaced by DIFFERENCE because the legacy
-    /// endpoint ships no `dropped[]` (§5.10 unmapped).
+    /// endpoint ships no `dropped[]` (§5.10 unmapped). Both sides of the
+    /// difference are qualified keys (ADR 0016); display derives the bare name.
     public func unmapped(boardWorktrees: [String]) -> [String] {
         guard let topology else { return [] }
         let mapped = topology.mappedWorktrees

@@ -7,7 +7,9 @@ import Testing
 /// The two payloads below were emitted by the Python `notify.compose` on
 /// 2026-07-23 — a `session.needs_answer` (P1, answerable) and an
 /// `account.limit_hit` (P2, no worktree) — and pasted here verbatim, `\u` escapes
-/// and all. `METHOD.md` §4: the server is the contract, so this suite decodes
+/// and all; the identity-bearing fields (`wt`, `dedupe_key`, `thread-id`) were
+/// re-stamped 2026-08-06 to the qualified card key the post-split `notify.py`
+/// emits (its projection keys on `node.card_key`, ADR 0016). `METHOD.md` §4: the server is the contract, so this suite decodes
 /// what the server sends, not what a document describes. The single most load-
 /// bearing fact it pins is a NEGATIVE one: the payload carries **no `category`**,
 /// which is why `PushMessage` derives it and why inline reply needs the service
@@ -26,16 +28,16 @@ struct PushTests {
         "interruption-level": "time-sensitive",
         "mutable-content": 1,
         "sound": "default",
-        "thread-id": "orchestra|ConfidAI2"
+        "thread-id": "orchestra|starbase/ConfidAI2"
       },
       "at": 1721000000.0,
       "counts": { "blocked": 1, "needs_input": 2 },
-      "dedupe_key": "session.needs_answer|ConfidAI2|ca1c96e9|3",
+      "dedupe_key": "session.needs_answer|starbase/ConfidAI2|ca1c96e9|3",
       "ev": "session.needs_answer",
       "event_id": "evt_abc123",
       "level": "P1",
       "sid": "ca1c96e9-1111-2222-3333-444455556666",
-      "wt": "ConfidAI2"
+      "wt": "starbase/ConfidAI2"
     }
     """
 
@@ -74,8 +76,8 @@ struct PushTests {
         let msg = try #require(PushMessage(userInfo: Self.userInfo(Self.needsAnswerJSON)))
         #expect(msg.event == "session.needs_answer")
         #expect(msg.eventID == "evt_abc123")
-        #expect(msg.dedupeKey == "session.needs_answer|ConfidAI2|ca1c96e9|3")
-        #expect(msg.worktree == "ConfidAI2")
+        #expect(msg.dedupeKey == "session.needs_answer|starbase/ConfidAI2|ca1c96e9|3")
+        #expect(msg.worktree == "starbase/ConfidAI2")
         #expect(msg.sid == "ca1c96e9-1111-2222-3333-444455556666")
         #expect(msg.level == "P1")
         #expect(msg.at == 1721000000.0)
@@ -92,13 +94,13 @@ struct PushTests {
         #expect(msg.categoryID == PushCategory.reply)
         let target = try #require(msg.replyTarget)
         #expect(target.sid == "ca1c96e9-1111-2222-3333-444455556666")
-        #expect(target.worktree == "ConfidAI2")
+        #expect(target.worktree == "starbase/ConfidAI2")
     }
 
     @Test func answerableEventDeepLinksToItsSession() throws {
         let msg = try #require(PushMessage(userInfo: Self.userInfo(Self.needsAnswerJSON)))
         let link = msg.deepLink
-        #expect(link.worktree == "ConfidAI2")
+        #expect(link.worktree == "starbase/ConfidAI2")
         #expect(link.sid == "ca1c96e9-1111-2222-3333-444455556666")
         #expect(link.isBoardOnly == false)
     }

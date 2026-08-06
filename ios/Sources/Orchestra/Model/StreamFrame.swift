@@ -8,7 +8,10 @@ import Foundation
 ///
 /// Verified against a snapshot frame taken 2026-07-22:
 /// `id: 1` / `event: state` / `data: {"type":"snapshot","v":1,"at":…,"order":[…],
-/// "cards":{…},"counts":{…},"other_procs":[…],"freshness":{…}}`.
+/// "cards":{…},"counts":{…},"other_procs":[…],"freshness":{…}}` — and since
+/// ADR 0016 the frame also carries `"nodes":{…}` whole, with `order` and the
+/// `cards` keys speaking qualified card keys (`observer.delta_since` is the
+/// writer on both branches).
 ///
 /// **`base` is absent on a snapshot and present on a delta.** The task brief
 /// lists it unconditionally; `delta_since` puts it on the delta branch only, and
@@ -46,13 +49,20 @@ public struct StreamFrame: Sendable, Equatable, Decodable {
     public let cards: [String: Worktree?]
     public let counts: Counts
     public let otherProcs: [OtherProc]
+    /// The `nodes` map, WHOLE on every frame — the fourth bump term (ADR 0016):
+    /// a node can appear with zero cards (a collector watching empty roots),
+    /// which must move the version with no card changing, so every frame must
+    /// carry the map or a client is told the version moved and given no way to
+    /// learn what moved (`observer.delta_since`'s audit).
+    public let nodes: [String: NodeInfo]
     /// How old each KIND of probe is. Moves with no version bump — that is the
     /// point of the no-bump path — so it can never be the cause of a stale card.
     public let freshness: Freshness
 
     public init(type: Kind, v: Int, base: Int?, at: Double, order: [String],
                 cards: [String: Worktree?], counts: Counts,
-                otherProcs: [OtherProc], freshness: Freshness) {
+                otherProcs: [OtherProc], freshness: Freshness,
+                nodes: [String: NodeInfo] = [:]) {
         self.type = type
         self.v = v
         self.base = base
@@ -61,11 +71,12 @@ public struct StreamFrame: Sendable, Equatable, Decodable {
         self.cards = cards
         self.counts = counts
         self.otherProcs = otherProcs
+        self.nodes = nodes
         self.freshness = freshness
     }
 
     enum CodingKeys: String, CodingKey {
-        case type, v, base, at, order, cards, counts, freshness
+        case type, v, base, at, order, cards, counts, nodes, freshness
         case otherProcs = "other_procs"
     }
 
@@ -79,15 +90,16 @@ public struct StreamFrame: Sendable, Equatable, Decodable {
         cards = try c.decodeIfPresent([String: Worktree?].self, forKey: .cards) ?? [:]
         counts = try c.decodeIfPresent(Counts.self, forKey: .counts) ?? Counts()
         otherProcs = try c.decodeIfPresent([OtherProc].self, forKey: .otherProcs) ?? []
+        nodes = try c.decodeIfPresent([String: NodeInfo].self, forKey: .nodes) ?? [:]
         freshness = try c.decodeIfPresent(Freshness.self, forKey: .freshness) ?? Freshness()
     }
 
-    /// The cards this frame asserts a value for.
+    /// The cards this frame asserts a value for, keyed `<node>/<worktree>`.
     public var changedCards: [String: Worktree] {
         cards.compactMapValues { $0 }
     }
 
-    /// The card names this frame says are gone.
+    /// The card keys this frame says are gone.
     public var removedCards: [String] {
         cards.filter { $0.value == nil }.map(\.key)
     }

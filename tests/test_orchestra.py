@@ -1844,6 +1844,12 @@ class TestFireResume(ResumeGuard):
 
     def setUp(self):
         super().setUp()
+        # The fire path matches the schedule against THIS node's card of that
+        # name — the board is merged now (ADR 0016) — so the node id is pinned
+        # and the fixture's card carries it. ConfigGuard restores CFG.
+        fb.CFG["node"] = "n1"
+        fb.node._reset()
+        self.addCleanup(fb.node._reset)
         self._saved = {n: getattr(fb.resume, n) for n in ("_tmux_resume",)}
         self._saved_state = fb.observer.cached_state
         self._saved_git = {"discover_worktrees": fb.gitrepo.discover_worktrees}
@@ -1886,7 +1892,7 @@ class TestFireResume(ResumeGuard):
         if loose_pid:   # someone ELSE's live terminal in the same worktree
             procs.append({"pid": loose_pid, "reachable": True})
         fb.observer.cached_state = lambda: {"worktrees": [
-            {"name": "wt", "sessions": [sess] if present else [],
+            {"name": "wt", "node": "n1", "sessions": [sess] if present else [],
              "live_procs": procs}]}
 
     def arm(self, armed_ago_s=3600):
@@ -2414,9 +2420,14 @@ class TestHTTPSmoke(ConfigGuard):
         self.assertEqual(d["error"], fb.UNADDRESSED)
 
     def test_the_router_carries_the_whole_identity(self):
-        # worktree names and tmux targets contain slashes and colons; the
+        # qualified card keys and tmux targets contain slashes and colons; the
         # focus route used to pluck one integer out of the raw path with a
-        # regex, which cannot carry any of this
+        # regex, which cannot carry any of this. The wire speaks the key
+        # `<node>/<worktree>` and the door hands the local path the bare name
+        # (NODES.md §4), so the node id is pinned to make "n1/" local.
+        fb.CFG["node"] = "n1"                # ConfigGuard restores CFG
+        fb.node._reset()
+        self.addCleanup(fb.node._reset)
         seen = {}
         saved = fb.terminal.focus_process, fb.terminal.send_to_process
         fb.terminal.focus_process = lambda pid, **kw: seen.setdefault(
@@ -2424,20 +2435,20 @@ class TestHTTPSmoke(ConfigGuard):
         fb.terminal.send_to_process = lambda pid, text, **kw: seen.setdefault(
             "send", (pid, text, kw)) or {"ok": True, "message": ""}
         try:
-            self._get("/api/focus?pid=7&wt=feat%2Fx&tmux=sess%3A0.1&tty=ttys003")
+            self._get("/api/focus?pid=7&wt=n1%2Ffeat-x&tmux=sess%3A0.1&tty=ttys003")
             self._post("/api/send", {"pid": 8, "text": "hi", "sid": "s1",
-                                     "account": "work", "worktree": "feat/x",
+                                     "account": "work", "worktree": "n1/feat-x",
                                      "tmux": "sess:0.1", "tty": "ttys003"})
         finally:
             fb.terminal.focus_process, fb.terminal.send_to_process = saved
         self.assertEqual(seen["focus"][0], 7)
-        self.assertEqual(seen["focus"][1]["worktree"], "feat/x")
+        self.assertEqual(seen["focus"][1]["worktree"], "feat-x")
         self.assertEqual(seen["focus"][1]["tmux"], "sess:0.1")
         self.assertEqual(seen["focus"][1]["tty"], "ttys003")
         self.assertEqual(seen["send"][0], 8)
         self.assertEqual(seen["send"][2]["sid"], "s1")
         self.assertEqual(seen["send"][2]["account"], "work")
-        self.assertEqual(seen["send"][2]["worktree"], "feat/x")
+        self.assertEqual(seen["send"][2]["worktree"], "feat-x")
         self.assertEqual(seen["send"][2]["tmux"], "sess:0.1")
 
     def test_unknown_path_404(self):

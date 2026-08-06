@@ -44,12 +44,15 @@ def _git(cwd, *args):
 def fake_state(at, *, cards=(("alpha", 0),), cpu=1.0, etime="01:00",
                last_write_at=1000.0,
                other_cpu=0.5, counts=None, status="working"):
-    """A collect_state() result, hand-built. `publish` reads exactly four keys."""
+    """A collect_state() result, hand-built. `publish` reads five keys. Cards
+    carry the `node` stamp `merge_nodes` would give them — "n1", the id
+    CacheGuard pins — because `publish` keys cards `<node>/<worktree>` and
+    RAISES on an unstamped card (ADR 0016)."""
     return {
         "generated_at": at,
         "counts": counts or {"working": len(cards)},
         "worktrees": [
-            {"name": name, "availability": "busy",
+            {"name": name, "node": "n1", "availability": "busy",
              "git": {"branch": "main", "dirty": dirty},
              "sessions": [{"sid": f"s-{name}", "status": status,
                            "last_write_at": last_write_at}],
@@ -77,8 +80,17 @@ class CacheGuard(unittest.TestCase):
         self._glob = fb.observer._observer
         self._watch = fb.CFG.get("watch")
         fb.CFG["watch"] = False
+        # The node id, pinned for the same reason `watch` is held still: the
+        # sweep and request paths now compose the BOARD (ADR 0016), and an
+        # unpinned `node.node_id()` would read the repo's own node.json into
+        # every card key asserted below.
+        self._node = fb.CFG.get("node")
+        fb.CFG["node"] = "n1"
+        fb.node._reset()
 
     def tearDown(self):
+        fb.CFG["node"] = self._node
+        fb.node._reset()
         fb.CFG["watch"] = self._watch
         fb.observer._observer = self._glob
         fb._cache.update(self._cache)
@@ -94,7 +106,7 @@ class TestVersioning(CacheGuard):
         snap = o.publish(fake_state(1000.0))
         self.assertEqual(snap.v, 1)
         self.assertEqual(snap.at, 1000.0)
-        self.assertEqual(list(snap.cards), ["alpha"])
+        self.assertEqual(list(snap.cards), ["n1/alpha"])
 
     def test_v_does_not_move_when_nothing_changed(self):
         """The subtle one. An identical view must publish no new version."""
@@ -122,7 +134,7 @@ class TestVersioning(CacheGuard):
                                     other_cpu=77.7))
         self.assertEqual(snap.v, 1)
         # …and the reading a client renders is the NEW one, not the stale one
-        self.assertEqual(snap.cards["alpha"]["live_procs"][0]["cpu"], 98.6)
+        self.assertEqual(snap.cards["n1/alpha"]["live_procs"][0]["cpu"], 98.6)
         self.assertEqual(snap.other_procs[0]["cpu"], 77.7)
 
     def test_a_session_has_no_stopwatch_left_to_exempt(self):
@@ -158,7 +170,7 @@ class TestVersioning(CacheGuard):
         self.assertEqual(o.publish(fake_state(1001.0,
                          cards=(("alpha", 0), ("beta", 0)))).v, 2)
         self.assertEqual(o.publish(fake_state(1002.0, cards=(("beta", 0),))).v, 3)
-        self.assertNotIn("alpha", o.snapshot().cards)
+        self.assertNotIn("n1/alpha", o.snapshot().cards)
 
     def test_counts_alone_can_bump(self):
         o = fb.Observer()
@@ -171,7 +183,7 @@ class TestVersioning(CacheGuard):
         o.publish(fake_state(2000.0, cards=(("alpha", 5),)))
         snap = o.publish(fake_state(1000.0, cards=(("alpha", 0),)))
         self.assertEqual(snap.at, 2000.0)
-        self.assertEqual(snap.cards["alpha"]["git"]["dirty"], 5)
+        self.assertEqual(snap.cards["n1/alpha"]["git"]["dirty"], 5)
         self.assertEqual(snap.v, 1)
 
 
@@ -228,7 +240,7 @@ class TestDeltaSince(CacheGuard):
         for n in (0, -1, 99):
             d = o.delta_since(n)
             self.assertEqual(d["type"], "snapshot", n)
-            self.assertEqual(set(d["cards"]), {"alpha", "beta"})
+            self.assertEqual(set(d["cards"]), {"n1/alpha", "n1/beta"})
             self.assertIn("other_procs", d)
 
     def test_known_n_returns_a_delta_naming_only_what_moved(self):
@@ -236,7 +248,7 @@ class TestDeltaSince(CacheGuard):
         d = o.delta_since(o.snapshot().v - 1)
         self.assertEqual(d["type"], "delta")
         self.assertEqual(d["base"], o.snapshot().v - 1)
-        self.assertEqual(set(d["cards"]), {"alpha"})      # beta never changed
+        self.assertEqual(set(d["cards"]), {"n1/alpha"})   # beta never changed
         self.assertIn("freshness", d)
 
     def test_a_current_client_gets_an_empty_delta_not_a_snapshot(self):
@@ -251,7 +263,7 @@ class TestDeltaSince(CacheGuard):
         o.publish(fake_state(2000.0, cards=(("beta", 0),)))
         d = o.delta_since(base)
         self.assertEqual(d["type"], "delta")
-        self.assertIsNone(d["cards"]["alpha"])            # None = card removed
+        self.assertIsNone(d["cards"]["n1/alpha"])         # None = card removed
 
     def test_a_client_older_than_the_ring_gets_a_full_snapshot(self):
         o = fb.Observer()
@@ -277,24 +289,34 @@ class TestDeltaSince(CacheGuard):
         self.assertEqual(delta["type"], "delta")
         self.assertEqual(set(delta) - {"base"}, set(full))
         self.assertNotIn("base", full)
+        # `nodes` is the fourth bump term (ADR 0016) and rides WHOLE on both
+        # branches — a delta that dropped it would be this class's bug again
+        self.assertIn("nodes", full)
+        self.assertIn("nodes", delta)
 
 
 # ------------------------------------------- a delta RECONSTRUCTS the snapshot
 
-def ordered_state(at, cards, *, other=(9,), counts=None):
+N1 = {"label": "n-one", "hostname": "n1.local", "user": "me"}
+
+
+def ordered_state(at, cards, *, other=(9,), counts=None, nodes=None):
     """A collect_state() result with the card ORDER and each card's status
     under the test's control — the two things the reconstruction claim is
-    about. `cards` is [(name, dirty, status)]; `other` is loose-process pids."""
+    about. `cards` is [(name, dirty, status)]; `other` is loose-process pids.
+    Cards carry the `node` stamp the merge would give them, and `nodes` is the
+    board's node map — the fourth bump term (ADR 0016)."""
     return {
         "generated_at": at,
         "counts": counts or {"working": len(cards)},
         "worktrees": [
-            {"name": name, "availability": "busy",
+            {"name": name, "node": "n1", "availability": "busy",
              "git": {"branch": "main", "dirty": dirty},
              "sessions": [{"sid": f"s-{name}", "status": status,
                            "last_write_at": 1000.0}],
              "live_procs": []}
             for name, dirty, status in cards],
+        "nodes": {"n1": dict(N1)} if nodes is None else nodes,
         "other_procs": [{"pid": pid, "cpu": 0.5, "etime": "01:00",
                          "cwd": "/elsewhere"} for pid in other],
     }
@@ -316,6 +338,7 @@ class Client:
 
     def __init__(self):
         self.v, self.cards, self.counts, self.other = None, {}, None, None
+        self.nodes = {}
 
     def apply(self, f):
         if f["type"] == "snapshot":
@@ -332,6 +355,9 @@ class Client:
             f"{sorted(self.cards)} — the delta did not carry every change")
         self.cards = {k: self.cards[k] for k in f["order"]}
         self.counts, self.other, self.v = f["counts"], f["other_procs"], f["v"]
+        # whole on every frame, exactly as `Fleet.apply` takes it — the fourth
+        # bump term (ADR 0016): a node can appear with zero cards
+        self.nodes = f.get("nodes") or {}
         return self
 
     @property
@@ -339,14 +365,16 @@ class Client:
         """Everything the board draws off a frame, ORDER INCLUDED — a dict
         compares equal regardless of key order, so the cards travel as a list."""
         return {"cards": list(self.cards.items()),
-                "counts": self.counts, "other_procs": self.other}
+                "counts": self.counts, "other_procs": self.other,
+                "nodes": self.nodes}
 
 
 def served(snap):
     """The same view, taken from the snapshot whole — what a client that had
     just connected would render."""
     return {"cards": list(snap.cards.items()),
-            "counts": snap.counts, "other_procs": snap.other_procs}
+            "counts": snap.counts, "other_procs": snap.other_procs,
+            "nodes": snap.nodes}
 
 
 class TestDeltaReconstructsTheSnapshot(CacheGuard):
@@ -386,14 +414,17 @@ class TestDeltaReconstructsTheSnapshot(CacheGuard):
         o.publish(ordered_state(1000.0, [("alpha", 0, "working"),
                                          ("beta", 0, "working")]))
         c.apply(o.delta_since(0))
-        self.assertEqual([k for k, _ in c.view["cards"]], ["alpha", "beta"])
+        self.assertEqual([k for k, _ in c.view["cards"]],
+                         ["n1/alpha", "n1/beta"])
         # beta needs input -> the server sorts it first; alpha is untouched
         o.publish(ordered_state(1001.0, [("beta", 0, "needs_input"),
                                          ("alpha", 0, "working")]))
         d = o.delta_since(c.v)
-        self.assertEqual(set(d["cards"]), {"beta"}, "alpha must not be resent")
+        self.assertEqual(set(d["cards"]), {"n1/beta"},
+                         "alpha must not be resent")
         c.apply(d)
-        self.assertEqual([k for k, _ in c.view["cards"]], ["beta", "alpha"])
+        self.assertEqual([k for k, _ in c.view["cards"]],
+                         ["n1/beta", "n1/alpha"])
 
     def test_a_loose_process_alone_bumps_the_version_and_rides_the_delta(self):
         """`other_procs` is part of the composed view `publish` diffs, so a
@@ -413,17 +444,23 @@ class TestDeltaReconstructsTheSnapshot(CacheGuard):
         self.assertEqual(c.view, served(o.snapshot()))
 
     def test_every_bump_term_reaches_a_delta_consumer(self):
-        """THE CLASS, not the instance. `publish` bumps `v` on three terms —
-        cards, `counts`, `other_procs`. For each one ALONE, a client holding the
-        previous version must land exactly where a client that took the snapshot
-        whole lands. `other_procs` was the one that did not: the version moved,
-        the frame said `{"cards": {}}`, and the client stayed wrong until its
-        cursor fell out of the 512-version ring."""
+        """THE CLASS, not the instance. `publish` bumps `v` on four terms —
+        cards, `counts`, `other_procs`, `nodes` (ADR 0016). For each one ALONE,
+        a client holding the previous version must land exactly where a client
+        that took the snapshot whole lands. `other_procs` was the one that did
+        not: the version moved, the frame said `{"cards": {}}`, and the client
+        stayed wrong until its cursor fell out of the 512-version ring. The
+        `nodes` move below is the canonical one — a collector watching empty
+        roots appears, so the map gains an id with no card changing at all."""
         base = [("alpha", 0, "working"), ("beta", 0, "working")]
         moves = {
             "cards": dict(cards=[("alpha", 1, "working"), ("beta", 0, "working")]),
             "counts": dict(cards=base, counts={"working": 1, "waiting": 1}),
             "other_procs": dict(cards=base, other=(9, 11)),
+            "nodes": dict(cards=base,
+                          nodes={"n1": dict(N1),
+                                 "n2": {"label": "n-two",
+                                        "hostname": "n2.local", "user": "me"}}),
         }
         for term, move in moves.items():
             with self.subTest(term=term):
@@ -442,19 +479,21 @@ class TestDeltaReconstructsTheSnapshot(CacheGuard):
 
     def test_nothing_outside_the_composed_view_can_bump_the_version(self):
         """The other end of the same invariant, and the half that keeps it true
-        tomorrow. The three terms above ride every frame; a FOURTH would not,
-        and would be exactly this bug again. So the terms are pinned closed:
-        every other top-level field of `collect_state`'s result moves without
-        moving `v`, because a client either derives it (`free_worktrees`),
-        fetches it beside the stream (`hostname`, `user`), or already has it on
-        every frame (`generated_at`, which rides as `at` with no vote).
+        tomorrow. The four terms above — `nodes` included since ADR 0016 —
+        ride every frame; a FIFTH would not, and would be exactly this bug
+        again. So the terms are pinned closed: every other top-level field of
+        the board's shape moves without moving `v`, because a client either
+        derives it (`free_worktrees`), fetches it beside the stream
+        (`hostname`, `user`), or already has it on every frame
+        (`generated_at`, which rides as `at` with no vote).
 
         Add a term to `publish` without adding it to `delta_since` and this
         test says so before a phone does."""
         for field, value in [("hostname", "elsewhere"), ("user", "someone"),
-                             ("free_worktrees", ["alpha"]),
+                             ("free_worktrees", ["n1/alpha"]),
                              ("generated_at", 1001.0),
-                             ("resumes", {"alpha": 1}), ("a_field_from_2027", 1)]:
+                             ("resumes", {"n1/alpha": 1}),
+                             ("a_field_from_2027", 1)]:
             with self.subTest(field=field):
                 o = fb.Observer()
                 first = ordered_state(1000.0, [("alpha", 0, "working")])
@@ -465,6 +504,18 @@ class TestDeltaReconstructsTheSnapshot(CacheGuard):
                 after[field] = value
                 self.assertEqual(o.publish(after).v, 1,
                                  f"{field} moved v but rides no frame")
+        # …and the complement that keeps the list honest: `nodes` is NOT in
+        # the list above, because it IS a bump term — the same move the
+        # sibling test rides through a delta must move `v` here.
+        o = fb.Observer()
+        o.publish(ordered_state(1000.0, [("alpha", 0, "working")]))
+        self.assertEqual(
+            o.publish(ordered_state(
+                1001.0, [("alpha", 0, "working")],
+                nodes={"n1": dict(N1),
+                       "n2": {"label": "n-two", "hostname": "n2.local",
+                              "user": "me"}})).v,
+            2, "a node appearing with zero cards must bump the version")
 
     def test_a_client_that_lagged_catches_up_in_one_delta(self):
         """The suspended-phone path (ADR 0004): four versions happen while the
@@ -761,7 +812,7 @@ class TestSynchronousFallback(CacheGuard):
             fb._cache["state"] = None
             fb.cached_state()
             self.assertEqual(o.snapshot().v, 1)
-            self.assertEqual(set(o.snapshot().cards), {"alpha", "beta"})
+            self.assertEqual(set(o.snapshot().cards), {"n1/alpha", "n1/beta"})
             self.assertIn("git", o.snapshot().freshness)
 
     def test_a_real_unchanged_fleet_publishes_no_second_version(self):
@@ -782,10 +833,10 @@ class TestSynchronousFallback(CacheGuard):
             self.assertEqual(o.snapshot().v, 1)
             self.assertEqual(o.stats()["sweeps"], 2)
             # …and a real edit does move it
-            (Path(o.snapshot().cards["alpha"]["path"]) / "new").write_text("x\n")
+            (Path(o.snapshot().cards["n1/alpha"]["path"]) / "new").write_text("x\n")
             o.sweep()
             self.assertEqual(o.snapshot().v, 2)
-            self.assertEqual(tuple(o._hist)[-1][1], ("alpha",))
+            self.assertEqual(tuple(o._hist)[-1][1], ("n1/alpha",))
 
 
 # --------------------------------------------------------- git's own clock
@@ -803,7 +854,7 @@ class TestGitCadence(CacheGuard):
     """
 
     def _dirty(self, o, name="alpha"):
-        return o.snapshot().cards[name]["git"]["dirty"]
+        return o.snapshot().cards[f"n1/{name}"]["git"]["dirty"]
 
     def test_git_runs_once_and_is_reused_until_its_clock_comes_round(self):
         with FleetFixture():
@@ -824,7 +875,7 @@ class TestGitCadence(CacheGuard):
         with FleetFixture():
             o = fb.Observer(git_s=60.0)
             o.sweep()
-            (Path(o.snapshot().cards["alpha"]["path"]) / "new").write_text("x\n")
+            (Path(o.snapshot().cards["n1/alpha"]["path"]) / "new").write_text("x\n")
             o.sweep()
             self.assertEqual(self._dirty(o), 0)        # still the cached answer
             self.assertEqual(o.snapshot().v, 1)
@@ -857,7 +908,7 @@ class TestGitCadence(CacheGuard):
         with FleetFixture():
             o = fb.Observer(git_s=600.0)
             o.sweep()
-            (Path(o.snapshot().cards["alpha"]["path"]) / "new").write_text("x\n")
+            (Path(o.snapshot().cards["n1/alpha"]["path"]) / "new").write_text("x\n")
             o.sweep()
             self.assertEqual(self._dirty(o), 0)
             o.nudge("finish/exit")
@@ -880,7 +931,7 @@ class TestGitCadence(CacheGuard):
             _git(d, "commit", "-q", "-m", "seed")
             fb._cache["state"] = None
             o.sweep()
-            card = o.snapshot().cards["gamma"]
+            card = o.snapshot().cards["n1/gamma"]
             self.assertEqual(card["git"]["branch"], "trunk")
             self.assertTrue(card["git"]["commit"]["hash"])
             # off-clock and per-root: the sitting worktrees were NOT re-probed,
@@ -910,7 +961,7 @@ class TestGitCadence(CacheGuard):
             o = fb.Observer(git_s=600.0)
             o.sweep(cold=True)
             self.assertEqual(o.snapshot().drift, 0)
-            (Path(o.snapshot().cards["alpha"]["path"]) / "new").write_text("x\n")
+            (Path(o.snapshot().cards["n1/alpha"]["path"]) / "new").write_text("x\n")
             o.sweep()                       # warm: serves the stale answer
             self.assertEqual(self._dirty(o), 0)
             o.sweep(cold=True)              # cold: recomputes, and compares
@@ -1139,11 +1190,11 @@ class TestSettlerDampsOnlyTheWayDown(CacheGuard):
         try:
             o = fb.Observer(dwell_s=600.0)
             o.sweep()
-            self.assertEqual(o.snapshot().cards["alpha"]["sessions"][0]["status"],
+            self.assertEqual(o.snapshot().cards["n1/alpha"]["sessions"][0]["status"],
                              "working")
             state["v"] = fake_state(time.time() + 1, status="waiting")
             o.sweep()
-            self.assertEqual(o.snapshot().cards["alpha"]["sessions"][0]["status"],
+            self.assertEqual(o.snapshot().cards["n1/alpha"]["sessions"][0]["status"],
                              "working")      # damped, by the sweep's own memory
             self.assertEqual(o.stats()["settle_held"], 1)
         finally:
@@ -1223,7 +1274,7 @@ class TestTheSweepMutatesNothing(CacheGuard):
             for _ in range(3):
                 fb._cache["state"] = None
                 o.sweep()
-            self.assertNotIn("closeout_sent", o.snapshot().cards["alpha"])
+            self.assertNotIn("closeout_sent", o.snapshot().cards["n1/alpha"])
             self.assertEqual(fb._closeouts, {"alpha": ts})
             self.assertEqual(o.snapshot().v, 1)   # …and nothing looked changed
 

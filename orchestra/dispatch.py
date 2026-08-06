@@ -39,8 +39,8 @@ import sys
 import threading
 import time
 
-from . import (config, shell, gitrepo, hooks, transcripts, limits, observer,
-               disk, idem)
+from . import (config, node, shell, gitrepo, hooks, transcripts, limits,
+               observer, disk, idem)
 
 
 # --------------------------------------------------------------- dispatch
@@ -117,6 +117,12 @@ def read_dispatch_log(limit=25):
         live = set(out.splitlines())
     for r in rows:
         r["alive"] = r.get("session") in live
+        # The log FILE keeps the bare name it always held (node-local history);
+        # the WIRE names a card by its qualified key (NODES.md §4). Every row
+        # in this file is this node's own dispatch, so the local id is the
+        # honest qualifier for old rows and new alike.
+        if r.get("worktree"):
+            r["worktree"] = node.key(r["worktree"])
     return {"entries": rows[-limit:][::-1]}
 
 
@@ -176,8 +182,12 @@ def _pick_defaults(model=None, pick_worktree=True):
         now = time.time()
         with _pick_lock:
             reserved = {n for n, exp in _wt_reservations.items() if exp > now}
+            # LOCAL cards only: the board is merged (ADR 0016) and dispatch is
+            # actuation, which is irreducibly local — an auto-pick must never
+            # choose a free worktree that lives on another machine.
             free = [w for w in state["worktrees"]
-                    if w["availability"] == "free" and w["name"] not in reserved]
+                    if w["availability"] == "free" and w["name"] not in reserved
+                    and w.get("node") == node.node_id()]
             free.sort(key=lambda w: (w["git"]["dirty"] or 0))
             wt = free[0]["name"] if free else None
             if wt:
@@ -503,6 +513,13 @@ def _run_dispatch(job, mission, worktree, account, model, effort,
         # reserved) worktree is released the same as an explicitly named one.
         if worktree and not result.get("ok"):
             _release_worktree(worktree)
+        # The result is wire-facing three ways (the /api/dispatch answer, the
+        # /api/dispatch/status poll, the push pipeline's projection), and on
+        # the wire a string naming a card is the qualified key (NODES.md §4).
+        # Qualified HERE, the one door all three read through; everything
+        # inside this function keeps speaking the node-local bare name.
+        if result.get("worktree"):
+            result = {**result, "worktree": node.key(result["worktree"])}
         with _jobs_lock:
             job["result"] = result
             job["done"] = True

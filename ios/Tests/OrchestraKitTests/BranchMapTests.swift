@@ -31,14 +31,27 @@ struct BranchMapTests {
         #expect(t.generatedAt > 1_700_000_000)
     }
 
-    /// The join key is the worktree NAME, not a `worktree_id` — because the
-    /// legacy payload has no id, and the board's cards key on the same name from
-    /// the same `discover_worktrees`. A test that expects an id would pass against
-    /// the doc and crash against the server.
-    @Test func branchesCarryAWorktreeNameNotAnId() throws {
+    /// The wire carries `worktree` (the name) and `node` as separate fields, not
+    /// a `worktree_id` — and the JOIN to the board is the derived branch key
+    /// `<node>/<worktree>` (ADR 0016), matching `Worktree.key` from the same
+    /// `discover_worktrees`. A test that expects an id would pass against the
+    /// doc and crash against the server.
+    @Test func branchesCarryAWorktreeNameAndNodeAndJoinByKey() throws {
         let g = try #require(try Self.topology().groups.first)
         #expect(g.branches.map(\.worktree).contains("ConfidAI3"))
         #expect(Set(g.branches.map(\.worktree)).count == 9)
+        #expect(g.branches.allSatisfy { $0.node == "starbase" })
+        #expect(g.branches.map(\.key).contains("starbase/ConfidAI3"))
+        // The board section joins by KEY: a dictionary still keyed by the bare
+        // name silently un-joins every row, which is the mixed state the
+        // coordinated change exists to prevent.
+        let t = try Self.topology()
+        let joined = BranchMap.place(g, sections: ["starbase/ConfidAI3": .working],
+                                     sort: .name, range: .all, now: t.generatedAt)
+        #expect(joined.main.first { $0.branch.worktree == "ConfidAI3" }?.section == .working)
+        let unjoined = BranchMap.place(g, sections: ["ConfidAI3": .working],
+                                       sort: .name, range: .all, now: t.generatedAt)
+        #expect(unjoined.main.first { $0.branch.worktree == "ConfidAI3" }?.section == nil)
     }
 
     /// A detached HEAD is `"?"` on the wire, and it is a real state on this fleet

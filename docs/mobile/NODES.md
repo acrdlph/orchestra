@@ -76,7 +76,10 @@ installation*: the checkout + config that watches that machine's `roots`.
   changes" trap demands.
 - Top-level `hostname`/`user` keep their meaning: **the board host**, constant
   for the life of the process, still fetched on the side path. Per-node
-  identity lives in `nodes`.
+  identity lives in `nodes`, and a top-level `node` names the board's own node
+  id — the client's only honest way to tell local from remote (the ⌖ focus
+  button on a loose process is actuation on the board machine, and a remote
+  node's process must not offer it).
 - `other_procs` entries gain `"node"`. Pids remain node-local hints and never
   form a cross-node identity (ADR 0016).
 - `/api/topology` branch entries gain `"node"`; the map joins topology to state
@@ -88,9 +91,12 @@ installation*: the checkout + config that watches that machine's `roots`.
   `worktree` field on the wire is the qualified key.
 
 **Freshness stays flat in Phase 0** (one node; identical semantics). Phase 1
-puts per-node recency in `nodes[id]` (`last_seen_at`, stale age) — on the
-no-bump path, like `freshness`, because a node going quiet must *date* its
-cards, never vanish them and never spin the version.
+puts per-node recency in the `freshness` map — keys `node:<id>`, the epoch the
+board last heard that collector — because `freshness` is already the no-bump
+path that rides every frame. It must NOT live in the `nodes` map: `nodes` is a
+bump term, and recency that moved on every heartbeat would spin the version
+forever. A node going quiet must *date* its cards, never vanish them and never
+tick the version doing it.
 
 ## 4. What stays node-local and bare
 
@@ -200,7 +206,53 @@ labels are one account — which decides whether limit warnings should merge —
 is a genuine identity question that gets its own decision when Phase 2's
 routing makes it actionable, not a mechanical qualification now.
 
-## 11. The documents
+## 11. Phase 1 — the read-only collector, decided before built
+
+The ADR fixes the direction (the collector dials OUT; the work machine never
+listens); these are the working decisions under it.
+
+**The run mode.** `python3 -m orchestra --collect-to http://<board>:<port>`
+starts everything a watcher needs — config, node id, the Observer sweep with
+its watcher and settler — and **no listener of any kind**: no `Server`, no
+port, no pairing surface. The push pipeline does not run either; the BOARD
+owns notifications, and a collector that pushed its own would notify twice.
+The token rides in config (`"collect_token"`, an ordinary device token minted
+on the board with `--add-device`; the file sits beside `devices.json` under
+the same file-permission discipline). A dedicated collector credential and
+allowlist are Phase 3 hardening, per the ADR's own phasing — a device token
+already holds the power to type into agents, so snapshot ingest grants it
+nothing new.
+
+**What crosses the wire.** After every local publish, and on a heartbeat
+(`"collect_heartbeat_s"`, default 15 s) even when nothing changed, the
+collector POSTs its **node snapshot** — the settled, pre-merge
+`collect_state` output its own Observer just published, never its merged
+board — as `POST /api/v1/nodes/snapshot`:
+`{"node": <id>, "label": <hostname>, "state": {…}, "seq": <local version>,
+"sent_at": <epoch>}`. Bearer token, JSON content type (the CSRF guard
+applies), its own body cap (`"node_snapshot_max_mb"`, default 1 MB — a
+snapshot is ~38 KB on a nine-worktree fleet, and the global 256 KB cap would
+silently strand a fifty-worktree machine). No idempotency key: latest-wins is
+the route's whole semantics.
+
+**The board's ingest.** Validates the id (format; and REFUSES the board's own
+node id — a remote claiming the local identity is the one collision the key
+cannot survive), stores `{node_id: {state, label, received_at, seq}}` in a
+registry, nudges the observer (`git=False`), and the next sweep's
+`board_state` merges local + registry through the same `merge_nodes` Phase 0
+built. The registry **persists** (atomic write beside the other state files):
+a board restart must reload last-known snapshots as *stale*, because the
+alternative — remote cards vanishing until the next heartbeat — is the
+disappeared-card-reads-all-clear lie, compressed into a window.
+
+**Node-down.** A collector that stops reporting leaves its cards exactly as
+they were, dated by `freshness["node:<id>"]`; boards and the phone render the
+age ("node `work` last spoke 4m ago") once it passes ~3 heartbeats. Nothing
+is deleted, nothing un-bumps, and a dark node's cards never read as free.
+The collector's own send loop retries on a flat 5 s clock in Phase 1;
+real backoff, reconnect discipline and clock-skew handling are Phase 3.
+
+## 12. The documents
 
 API.md §16.1 freezes the legacy surface byte-stable; ADR 0016 breaks that
 freeze deliberately and this is the commit that does it. Every place API.md,

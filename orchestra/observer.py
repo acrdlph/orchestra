@@ -55,11 +55,33 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 
-from . import (config, gitrepo, hooks as hooks_mod, procs, transcripts, status,
-               limits, watcher)
+from . import (config, gitrepo, hooks as hooks_mod, node, procs, transcripts,
+               status, limits, watcher)
 
 STATE_TTL_S = 4.0              # cache collector output between requests
 _cache = {"t": 0.0, "state": None}
+
+
+def _attention_statuses(sessions):
+    """The statuses that count toward attention — a handed-off limit session
+    does not (work already continues elsewhere). Module-level because the
+    merge needs the same rule the collector used, and two copies of a policy
+    are how the board and the push pipeline drift apart."""
+    return [s["status"] for s in sessions
+            if not (s["status"] == "limit" and s.get("handed_to"))]
+
+
+def _severity(card):
+    """One card's triage rank, 0 = loudest. Pure; shared by `collect_state`'s
+    per-node sort and `merge_nodes`' global one, so a card sorts identically
+    whether one machine composed it or five did."""
+    st = _attention_statuses(card["sessions"])
+    if "needs_input" in st: return 0
+    if "blocked" in st: return 1
+    if "waiting" in st and "working" not in st: return 2
+    if "working" in st: return 3
+    if "limit" in st: return 4   # un-actionable — parked behind the busy ones
+    return 5
 
 
 # ---------------------------------------------------------------- collectors
@@ -193,10 +215,6 @@ def collect_state(fresh=None, git=None, cold=False, settle=None, hooks=None):
                                else rank.get(s["status"], len(rank)),
                                -s["last_write_at"]))
 
-    def _attention_statuses(ss):
-        return [s["status"] for s in ss
-                if not (s["status"] == "limit" and s.get("handed_to"))]
-
     # one fan-out for every worktree's git state, rather than one blocking call
     # per card — this path is dominated by waiting on `git`, not by our own work
     roots = [w["git"] for w in worktrees]
@@ -250,15 +268,7 @@ def collect_state(fresh=None, git=None, cold=False, settle=None, hooks=None):
     matched = {p["pid"] for c in cards for p in c["live_procs"]}
     other = [p for p in all_procs if p["pid"] not in matched]
 
-    def severity(c):
-        st = _attention_statuses(c["sessions"])
-        if "needs_input" in st: return 0
-        if "blocked" in st: return 1
-        if "waiting" in st and "working" not in st: return 2
-        if "working" in st: return 3
-        if "limit" in st: return 4   # un-actionable — parked behind the busy ones
-        return 5
-    cards.sort(key=lambda c: (severity(c), c["name"].lower()))
+    cards.sort(key=lambda c: (_severity(c), c["name"].lower()))
 
     counts = {"working": 0, "needs_input": 0, "limit": 0, "blocked": 0, "waiting": 0, "ended": 0}
     for c in cards:
@@ -287,6 +297,84 @@ def collect_state(fresh=None, git=None, cold=False, settle=None, hooks=None):
                          "cwd": p.get("cwd")} for p in other],
     }
 
+
+# --------------------------------------------------------------- the board
+#
+# ADR 0016: `collect_state` above is ONE NODE's composer — it reads one
+# machine's worktrees, processes and transcripts, and its output is a NODE
+# SNAPSHOT in which bare worktree names are still unambiguous. The board is
+# the merge of N of those, and on the board a bare name is not an identity:
+# two machines can each hold a `ConfidAI2`. `merge_nodes` is where the
+# qualified key `<node>/<worktree>` is minted, and it is deliberately a pure
+# function — the two-machines-one-name proof drives it with literals, and the
+# single-machine board goes through it on every sweep, so the multi-machine
+# path is exercised with the network absent (the ADR's whole migration story).
+
+def merge_nodes(snaps):
+    """`{node_id: node_snapshot} -> the merged board` (docs/mobile/NODES.md §5).
+
+    Cards gain `node` and sort globally by `(severity, name.lower(), node)` —
+    byte-identical to the per-node order when one node is present, and a
+    deterministic interleave when more are. `counts` sum; `free_worktrees` is
+    re-derived as QUALIFIED keys in board order; `other_procs` are tagged with
+    their node (a pid is only a hint inside its own node — ADR 0016);
+    `nodes` describes every node that contributed, which is the half the
+    invariant test holds against the references (§6: everything referenced
+    must be described).
+
+    A node id that cannot key cards raises: by Phase 1 these ids arrive from
+    the network, and an id that fails `node.valid` must be refused at the
+    door, never composed into a board it can only corrupt.
+    """
+    cards, other, nodes = [], [], {}
+    counts = {"working": 0, "needs_input": 0, "limit": 0, "blocked": 0,
+              "waiting": 0, "ended": 0}
+    gen = 0.0
+    for nid in sorted(snaps):
+        if not node.valid(nid):
+            raise ValueError(f"node id {nid!r} cannot key cards "
+                             f"(must match {node.NODE_RE.pattern})")
+        s = snaps[nid]
+        gen = max(gen, s.get("generated_at") or 0.0)
+        for k in counts:
+            counts[k] += (s.get("counts") or {}).get(k, 0)
+        for w in s.get("worktrees", []):
+            cards.append({**w, "node": nid})
+        for p in s.get("other_procs", []):
+            other.append({**p, "node": nid})
+        host = s.get("hostname") or ""
+        nodes[nid] = {"label": host.split(".")[0] or nid,
+                      "hostname": host, "user": s.get("user") or ""}
+    cards.sort(key=lambda c: (_severity(c), c["name"].lower(), c["node"]))
+    return {
+        "generated_at": gen,
+        "counts": counts,
+        "free_worktrees": [node.card_key(c) for c in cards
+                           if c["availability"] == "free"],
+        "worktrees": cards,
+        "nodes": nodes,
+        "other_procs": other,
+    }
+
+
+def board_state(local_state):
+    """One local snapshot, merged as the board (Phase 0's built-in collector).
+
+    Phase 1 adds the remote nodes' snapshots to the dict below; nothing else
+    here changes, which is the point of the seam. Top-level `hostname`/`user`
+    keep their historical meaning — THE BOARD HOST, constant for the life of
+    the process (the side-fetch contract in stream.js/FleetSide) — and the
+    board host is by definition the machine the local collector watches.
+    """
+    merged = merge_nodes({node.node_id(): local_state})
+    merged["hostname"] = local_state.get("hostname") or ""
+    merged["user"] = local_state.get("user") or ""
+    # The board's OWN node id, so a client can tell local from remote without
+    # guessing through hostnames — the ⌖ focus button on a loose process is
+    # actuation on the board machine, and a remote node's process must not
+    # offer it (pids are node-local hints, ADR 0016).
+    merged["node"] = node.node_id()
+    return merged
 
 
 # ------------------------------------------------------- the publish point
@@ -549,11 +637,19 @@ class Snapshot:
     ADVISORY. Safe to render, to diff, to notify from. Never a mutation
     precondition — a mutation validates against the world at the instant it acts.
 
-    `cards` is name -> card, in the board's severity order (dicts preserve
-    insertion order). It is the view the version is diffed against; the wire
-    payload still travels as `cached_state()`'s list, so a duplicate worktree
-    name — which the rest of the app already treats as impossible, `_closeouts`
-    and `/api/finish` both key on it — costs delta precision, never a card.
+    `cards` is `<node>/<worktree>` -> card, in the board's severity order
+    (dicts preserve insertion order; ADR 0016 — a bare name collides the
+    moment two machines each hold a `ConfidAI2`). It is the view the version
+    is diffed against; the wire payload still travels as `cached_state()`'s
+    list. A duplicate worktree name WITHIN one node — which the rest of the
+    app already treats as impossible, `_closeouts` and `/api/finish` both key
+    on it — still costs delta precision, never a card: the key's scope grew
+    from machine to fleet, its grain within a machine did not (NODES.md §2).
+
+    `nodes` is the fourth bump term: `{node_id: {label, hostname, user}}`,
+    describing every node the cards reference. It can move with no card
+    changing (a collector watching empty roots appears), so it takes part in
+    the version rule and rides every frame — `delta_since`'s audit.
     """
     v: int
     at: float
@@ -570,6 +666,10 @@ class Snapshot:
     # a VM/clone restore, a manual change) cannot freeze the version. §4.3, and
     # ENGINE §4.5's platform fact that macOS `time.monotonic()` includes sleep.
     mono: float = 0.0
+    # LAST, deliberately: every existing positional construction of this class
+    # (publish's, the tests') stays valid. The field is no less load-bearing
+    # for its position — see the docstring's fourth-bump-term paragraph.
+    nodes: dict = field(default_factory=dict)
 
 
 # The stopwatches. Card fields that move on their own with nothing in the world
@@ -851,8 +951,15 @@ class Observer:
         snap = self._snap
         if snap is None:
             return ()
-        pids = {p["pid"] for c in snap.cards.values() for p in c.get("live_procs", [])}
-        pids |= {p["pid"] for p in snap.other_procs}
+        # LOCAL cards only. The snapshot is the merged board (ADR 0016), and
+        # the moment it can hold another node's cards an unfiltered read here
+        # would arm EVFILT_PROC on that machine's pids — which on THIS machine
+        # name whatever processes happen to wear those numbers. The filter
+        # lands now, with the seam, not in Phase 1 when it would first misfire.
+        local = node.node_id()
+        pids = {p["pid"] for c in snap.cards.values()
+                if c.get("node") == local for p in c.get("live_procs", [])}
+        pids |= {p["pid"] for p in snap.other_procs if p.get("node") == local}
         return tuple(sorted(pids))
 
     def start(self):
@@ -942,6 +1049,9 @@ class Observer:
             # POST that has to wait for this sweep's lock is an AGENT that has
             # to wait for it.
             hooks=self._hooks.live(started))
+        # The node snapshot becomes the board here — one built-in local
+        # collector through the same merge N remote ones will use (ADR 0016).
+        state = board_state(state)
         ms = (time.perf_counter() - t0) * 1000.0
         self._sweeps += 1
         # Every memo's and cadence's disagreement with the cold recompute,
@@ -995,16 +1105,25 @@ class Observer:
         second source of truth that drifts from the composition the first time
         somebody edits the pairing heuristic.
 
-        THE COMPOSED VIEW IS EXACTLY THREE TERMS: the stopwatch-stripped cards,
-        `counts`, and `other_procs`. Adding a fourth is not a local change —
-        every term here MUST ride every frame `delta_since` builds, or a client
-        is told the version moved and given no way to learn what moved. Read
-        `delta_since`'s audit before adding one; two tests fail if you do not.
+        THE COMPOSED VIEW IS EXACTLY FOUR TERMS: the stopwatch-stripped cards,
+        `counts`, `other_procs`, and `nodes` (ADR 0016 — a node can appear
+        with zero cards, which must move the version with no card changing).
+        Adding a fifth is not a local change — every term here MUST ride every
+        frame `delta_since` builds, or a client is told the version moved and
+        given no way to learn what moved. Read `delta_since`'s audit before
+        adding one; two tests fail if you do not.
+
+        Cards are keyed `<node>/<worktree>` — `node.card_key`, which RAISES on
+        a card without a `node` field: a card the merge never stamped, keyed
+        quietly by bare name, is exactly the cross-machine collision ADR 0016
+        exists to end. Publish is fed by `board_state`/`merge_nodes`, which
+        always stamps.
         """
         now = state.get("generated_at") or time.time()
-        cards = {c["name"]: c for c in state.get("worktrees", [])}
+        cards = {node.card_key(c): c for c in state.get("worktrees", [])}
         other = list(state.get("other_procs", []))
         counts = dict(state.get("counts", {}))
+        nodes = dict(state.get("nodes", {}))
         with self._cv:
             prev = self._snap
             if prev is not None:
@@ -1026,7 +1145,8 @@ class Observer:
             new_d = {k: _diffable(c) for k, c in cards.items()}
             new_o = _diffable_procs(other)
             if (prev is not None and new_d == self._dcards
-                    and counts == prev.counts and new_o == self._dother):
+                    and counts == prev.counts and new_o == self._dother
+                    and nodes == prev.nodes):
                 # no version bump — but `at` and `freshness` are precisely the
                 # fields that say "still true as of now", so they do move, and
                 # the cards carry the current stopwatch readings.
@@ -1043,7 +1163,7 @@ class Observer:
             self._dcards, self._dother = new_d, new_o
             self._snap = Snapshot(self._version, now, cards, other, counts,
                                   dict(self._fresh), self._drift, self._sweep_ms,
-                                  snap_mono)
+                                  snap_mono, nodes=nodes)
             self._cv.notify_all()
             return self._snap
 
@@ -1096,6 +1216,10 @@ class Observer:
           order        whole   the board's triage order — see below
           counts       whole   a bump term; 85 B on the live fleet
           other_procs  whole   a bump term — see below
+          nodes        whole   a bump term (ADR 0016): a node appearing with
+                               zero cards moves the version with no card
+                               changing, and a client must be able to name
+                               every node its cards reference (NODES.md §6)
           freshness    whole   how old each KIND of probe is (§3.3). Moves with
                                NO version bump (that is the point of the
                                no-bump path), so it can never cause this bug;
@@ -1189,7 +1313,8 @@ class Observer:
             return {"type": "snapshot", "v": snap.v, "at": snap.at,
                     "order": list(snap.cards),
                     "cards": snap.cards, "counts": snap.counts,
-                    "other_procs": snap.other_procs, "freshness": snap.freshness}
+                    "other_procs": snap.other_procs, "nodes": snap.nodes,
+                    "freshness": snap.freshness}
         keys = set()
         for ver, ks in hist:
             if ver > n:
@@ -1198,7 +1323,7 @@ class Observer:
                 "order": list(snap.cards),
                 "cards": {k: snap.cards.get(k) for k in keys},   # None = removed
                 "counts": snap.counts, "other_procs": snap.other_procs,
-                "freshness": snap.freshness}
+                "nodes": snap.nodes, "freshness": snap.freshness}
 
     def stats(self):
         snap = self._snap
@@ -1383,7 +1508,7 @@ def demo_state():
                         "commit": {"hash": "a1b2c3d", "ts": int(now - cts), "subject": subject}},
                 "sessions": sessions, "availability": avail, "live_procs": procs}
 
-    cards = [
+    demo_cards = [
         card("orbital-api", "attention", "feat/webhook-retries", 12, 3, 0, 1800,
              "feat(webhooks): exponential backoff with jitter", [
                  sess("needs_input", "work", "fable-5", 340,
@@ -1413,13 +1538,17 @@ def demo_state():
         card("lander-docs", "free", "docs/quickstart", 2, None, None, 86400,
              "docs: rewrite quickstart around the new init flow", [], []),
     ]
-    return {
+    # Through the SAME merge the real board uses, so demo mode exercises the
+    # exact wire shape (qualified keys, node-tagged cards, the nodes map) —
+    # its docstring's whole promise. The demo node id is "starbase".
+    board = merge_nodes({"starbase": {
         "generated_at": now, "hostname": "starbase", "user": "you",
         "counts": {"working": 1, "needs_input": 1, "limit": 1, "blocked": 0, "waiting": 1, "ended": 1},
-        "free_worktrees": ["voyager-cli", "lander-docs"],
-        "worktrees": cards,
+        "worktrees": demo_cards,
         "other_procs": [{"pid": 40001, "cpu": 1.1, "etime": "15:02", "cwd": "/demo/scratch"}],
-    }
+    }})
+    board["hostname"], board["user"], board["node"] = "starbase", "you", "starbase"
+    return board
 
 
 def cached_state():
@@ -1481,6 +1610,10 @@ def cached_state():
             # session as `inferred` for one poll and `observed` on the next,
             # which is the board disagreeing with itself about how sure it is.
             hooks=_observer._hooks.live(now) if _observer is not None else None)
+        # The same board composition the sweep applies — the request path must
+        # serve the shape the frames carry, or a seeded client and a streaming
+        # one would disagree about what a card is even called.
+        state = board_state(state)
         # Compare-and-swap, never a blind write — the same guard the sweep
         # keeps (`Observer.sweep`). A mutation that parked `_cache["t"] = 0.0`
         # while this collect was in flight means the state just collected

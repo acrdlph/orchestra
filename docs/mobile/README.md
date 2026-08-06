@@ -197,11 +197,15 @@ against it. Design it once, correctly, for all three consumers — that is the w
 sequencing in ADR 0004.
 
 Its envelope is now **closed, and closed as a class rather than as a list**. `publish` bumps `v`
-on exactly three terms — the stopwatch-stripped cards, `counts`, `other_procs` — and all three
-ride every frame; a term that can move the version and cannot ride one tells a client "something
-changed" and gives it no way to learn what. Two tests pin it from both ends, because either half
-alone rots: every bump term must reach a delta consumer, **and** nothing outside those three may
-bump at all, so adding a fourth fails the suite instead of failing a phone. `other_procs` was the
+on exactly four terms — the stopwatch-stripped cards, `counts`, `other_procs`, and (since ADR
+0016 Phase 0, 2026-08-06) `nodes`, the per-node identity map — and all four ride every frame; a
+term that can move the version and cannot ride one tells a client "something changed" and gives
+it no way to learn what. Two tests pin it from both ends, because either half
+alone rots: every bump term must reach a delta consumer, **and** nothing outside those terms may
+bump at all, so adding one fails the suite instead of failing a phone — which is exactly how the
+fourth arrived: the collector split's `nodes` (a node can appear with zero cards, and that must
+move the version) extended `delta_since`'s audit and both pinning tests in the same commit as
+the wire ([`NODES.md`](NODES.md) §3). `other_procs` was the
 one that was missing, and it now rides whole rather than being tracked in the changed-keys ring:
 measured on the live 9-worktree fleet that is 1,172 B on a median 7,853 B delta (15 %, 2.9 % of a
 41,384 B snapshot) against 22 version bumps in 150 s — 172 B/s per subscriber — and ring-tracking
@@ -210,8 +214,10 @@ what moved, which is the exact shape of the bug being closed. Per-entity change 
 paid for once, generally, in `/api/v1` §7.1's op address space, where `other` is already a leaf
 beside `counts`, `free` and `order`. Everything absent from a frame is absent deliberately and
 says why in `delta_since`: `drift`/`sweep_ms` (diagnostics, no vote, `/api/stats`),
-`hostname`/`user` (constant for the process, side fetch), `free_worktrees` (a pure function of
-the cards — on the wire it would be a second copy that can disagree) and `resumes` (owned by
+`hostname`/`user` (the **board host's**, constant for the process, side fetch — per-node
+identity is the `nodes` map, which does ride), `free_worktrees` (a pure function of
+the cards — on the wire it would be a second copy that can disagree; since ADR 0016 Phase 0 the
+derivation yields qualified keys `<node>/<worktree>`) and `resumes` (owned by
 `resume.py`, which the observer does not watch, so arming one moves no version and it could not
 ride this stream however the frame were shaped).
 

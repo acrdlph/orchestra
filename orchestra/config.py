@@ -29,6 +29,12 @@ HERE = Path(__file__).resolve().parent.parent  # package lives one level under t
 CFG = {
     "host": "127.0.0.1",       # keep loopback: the board serves transcript text
     "port": 4242,
+    # This collector's node id (ADR 0016, docs/mobile/NODES.md). Empty means
+    # use — or mint and persist — the id in node.json beside this package.
+    # Setting it overrides both and writes nothing. It keys every card as
+    # "<node>/<worktree>", so it must match node.NODE_RE (lowercase letters,
+    # digits, '-'); a value that does not refuses at startup.
+    "node": "",
     "roots": [str(Path.cwd())],  # dirs whose git-repo children are watched
     "pattern": "",             # optional regex filter on worktree dir names
     "homes": [],               # Claude home dirs; [] = auto-discover ~/.claude*

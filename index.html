@@ -137,6 +137,12 @@ header .wrap { max-width:none; }
 .badge.waiting { color:var(--yellow); border-color:var(--yellow); background:rgba(212,176,106,.12); }
 .badge.attention { color:var(--accent); border-color:var(--accent); background:var(--accent-glow);
   animation:pulse 1.6s var(--ease) infinite; }
+/* which machine a card lives on — rendered only when the board holds more
+   than one node, so a single-machine board looks exactly as it always has */
+.nodetag { font-size:var(--fs-2xs); font-weight:500; letter-spacing:var(--track);
+  color:var(--muted); background:var(--bg-2); border:1px solid var(--border-2);
+  border-radius:5px; padding:2px 7px; white-space:nowrap; }
+.nodetag::before { content:"⌂ "; color:var(--muted-2); }
 @keyframes pulse { 50% { box-shadow:0 0 10px var(--accent-glow); } }
 .card-head .procs { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .card-head .noproc { color:var(--muted); font-size:var(--fs-xs); }
@@ -378,6 +384,24 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: openChat(${escArg(k)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
 
+// The card key: "<node>/<worktree>" (ADR 0016). Identity everywhere — the DOM
+// reconciler, the action registries, every POST body — while `name` stays the
+// display label. Two machines can each hold a `ConfidAI2`; only the key tells
+// their cards apart. Keep in lockstep with stream.js's cardKey.
+const cardKey = (w) => w.node ? `${w.node}/${w.name}` : w.name;
+// More than one machine on the board? Only then do node badges render — a
+// single-machine board must look exactly as it always has (NODES.md §7).
+let multiNode = false;
+const nodeTag = (node) => (multiNode && node)
+  ? ` <span class="nodetag">${esc(node)}</span>` : "";
+// display form of a qualified key: the bare name alone on a one-node board
+const keyLabel = (k) => {
+  const s = String(k ?? "");
+  const cut = s.indexOf("/");
+  if (cut < 0) return s;
+  return multiNode ? `${s.slice(cut + 1)} ⌂${s.slice(0, cut)}` : s.slice(cut + 1);
+};
+
 // The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6).
 // The server's layer is OPT-IN PER REQUEST: no header, no protection. The phone
 // has sent these on every mutation since ios/…/Endpoint.swift; this board sent
@@ -427,7 +451,7 @@ function sessProc(w, s) {
   const p = w.live_procs.find(x => x.pid === s.pid);
   if (!p) return "";
   return procChip(p, {
-    wt: w.name,
+    wt: cardKey(w),
     certain: s.pid_certain,
     title: s.pid_certain
       ? `jump to this session's terminal — [${s.account}] on ${p.tty || p.host || "tmux"}`
@@ -518,10 +542,16 @@ let SCHED = {};   // armed auto-resumes, keyed `worktree|sid` (from /api/state)
 function render(st) {
   const now = st.generated_at;
   $("brandUser").textContent = `${st.user || "you"}@fleet`;
+  multiNode = Object.keys(st.nodes || {}).length > 1;
   SCHED = st.resumes || {};
+  // `wt` is the card KEY — the string every POST body and registry uses —
+  // and `name`/`node` ride for display. SCHED's keys arrive qualified from
+  // the server (resume_public), so the two registries agree by construction.
   for (const w of st.worktrees)
     for (const s of w.sessions)
-      REG[`${w.name}|${s.sid}`] = { s, procs: w.live_procs, wt: w.name };
+      REG[`${cardKey(w)}|${s.sid}`] = { s, procs: w.live_procs,
+                                        wt: cardKey(w), name: w.name,
+                                        node: w.node };
   const c = st.counts;
   // limit-stuck agents are NOT actionable — they never ring the bell or
   // count as "need you"; they get their own tile with the next reset
@@ -540,11 +570,12 @@ function render(st) {
     <div class="tile"><div class="k">⛔ waiting on limits</div><div class="v">${c.limit || 0}</div>
       <div class="sub">${resets.length ? `<span class="until" data-until="${Math.min(...resets)}" data-prefix="next reset "></span>` : "agents resume on reset"}${(n => n ? " · ⏱ " + n + " armed" : "")(Object.values(SCHED).filter(r => r.status === "pending").length)}</div></div>
     <div class="tile free"><div class="k">◇ free worktrees</div><div class="v">${freeNames.length}</div>
-      <div class="sub" title="${esc(freeNames.join(", "))}">${esc(freeNames.join(", ") || "none — everything busy")}</div></div>
+      <div class="sub" title="${esc(freeNames.map(keyLabel).join(", "))}">${esc(freeNames.map(keyLabel).join(", ") || "none — everything busy")}</div></div>
     <div class="tile"><div class="k">⌁ live agents</div><div class="v">${st.worktrees.reduce((n,w)=>n+w.live_procs.length,0) + st.other_procs.length}</div>
-      <div class="sub">claude processes on ${esc(st.hostname)}</div></div>`;
+      <div class="sub">claude processes ${multiNode ? `across ${Object.keys(st.nodes).length} machines` : `on ${esc(st.hostname)}`}</div></div>`;
 
   reconcileGrid(st, (w) => {
+    const key = cardKey(w);
     const g = w.git || {};
     const sync = (g.ahead != null) ? `<span class="sync-count">↑${g.ahead} ↓${g.behind}</span>` : "";
     const dirty = g.dirty ? `<span class="delta">Δ${g.dirty} uncommitted</span>` : "";
@@ -591,9 +622,9 @@ function render(st) {
           <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
             ${sessProc(w, s)}
             ${s.status === "limit" && s.limit && s.limit.group === "session" && s.limit.resets_at
-              ? `<button class="abtn resume" data-key="${esc(w.name)}|${esc(s.sid)}" data-until="${s.limit.resets_at}">▶ resume</button>` : ""}
+              ? `<button class="abtn resume" data-key="${esc(key)}|${esc(s.sid)}" data-until="${s.limit.resets_at}">▶ resume</button>` : ""}
             ${s.status === "limit" && !s.handed_to ? schedControls(w, s) : ""}
-            <button class="abtn" onclick="openChat(${escArg(`${w.name}|${s.sid}`)})">✉ chat</button>
+            <button class="abtn" onclick="openChat(${escArg(`${key}|${s.sid}`)})">✉ chat</button>
           </span>
         </div>
         ${s.topic ? `<div class="topic">${esc(s.topic)}</div>` : ""}
@@ -604,13 +635,13 @@ function render(st) {
         ${pend}
       </div>`;
     }).join("");
-    const finArmed = window._armFinish && window._armFinish.wt === w.name && Date.now() < window._armFinish.until;
+    const finArmed = window._armFinish && window._armFinish.wt === key && Date.now() < window._armFinish.until;
     // closeout in flight → a persistent note between card-head and gitline. It
     // survives a page reload (closeout_sent + git.dirty come from the state
     // payload); the FIN_PENDING part is client-only and adds the refusal reason.
     let note = "";
     if (w.closeout_sent) {
-      const fin = FIN_PENDING[w.name];
+      const fin = FIN_PENDING[key];
       let body = `⧗ closeout pending — brief sent ${rel(Math.max(0, Math.floor(now - w.closeout_sent)))} ago`;
       if (g.dirty) body += ` · Δ${g.dirty} uncommitted`;
       if (fin) body += ` · blocked: ${esc(fin.left)}`;
@@ -620,19 +651,19 @@ function render(st) {
       // no closeout_sent on this render clears the entry — a clean close, the
       // terminal dying on its own, or a fresh mission. Here so a refactor of the
       // card-content path can't silently drop it.
-      delete FIN_PENDING[w.name];
+      delete FIN_PENDING[key];
     }
     return `<div class="card-head">
         <span class="badge ${w.availability}">${AVAIL[w.availability]}</span>
-        <span class="name">${esc(w.name)}</span>
+        <span class="name">${esc(w.name)}</span>${nodeTag(w.node)}
         <span class="procs">${(() => {
           // terminals no session claims — an agent whose transcript hasn't been
           // written yet, or one running outside any tracked session
           const loose = w.live_procs.filter(p => !claimed.has(p.pid));
-          if (loose.length) return loose.map(p => procChip(p, { wt: w.name, title: "live terminal in this worktree — not tied to a session yet" })).join("");
+          if (loose.length) return loose.map(p => procChip(p, { wt: key, title: "live terminal in this worktree — not tied to a session yet" })).join("");
           return w.live_procs.length ? "" : `<span class="noproc">no live proc</span>`;
         })()}
-          <button class="abtn finish ${finArmed ? "armed" : ""}" data-wt="${esc(w.name)}" ${w.closeout_sent ? 'data-close="1"' : ""}
+          <button class="abtn finish ${finArmed ? "armed" : ""}" data-wt="${esc(key)}" ${w.closeout_sent ? 'data-close="1"' : ""}
             title="${w.closeout_sent
               ? `step 2 of finish — closeout brief sent ${rel(Math.floor(Date.now() / 1000 - w.closeout_sent))} ago; once the agent reports done, this verifies the landing and /exits it (never re-sends the brief)`
               : "close out: whatever's left gets done — already-landed work is never re-checked; card goes free"}">${
@@ -656,7 +687,16 @@ function render(st) {
 
   $("other").innerHTML = st.other_procs.length
     ? `<h3>other live agents (outside watched worktrees)</h3>` +
-      st.other_procs.map(p => `<div>⌁ <button class="pidbtn" onclick="focusPid(${p.pid}, ${escArg(addr({ cwd: p.cwd }))})">⌖ ${p.pid}${p.tty ? ` <span class="tt">${esc(p.tty)}</span>` : ""}${p.host ? ` ${esc(p.host)}` : ""}</button> ${p.cpu.toFixed(1)}% cpu · up ${esc(p.etime)} · ${esc(p.cwd || "?")}</div>`).join("")
+      st.other_procs.map(p => {
+        // ⌖ focus is actuation ON THE BOARD MACHINE; a process on another
+        // node gets a label, never a button — its pid means nothing here
+        // (ADR 0016: pids are node-local hints)
+        const local = !p.node || p.node === st.node;
+        const chip = local
+          ? `<button class="pidbtn" onclick="focusPid(${p.pid}, ${escArg(addr({ cwd: p.cwd }))})">⌖ ${p.pid}${p.tty ? ` <span class="tt">${esc(p.tty)}</span>` : ""}${p.host ? ` ${esc(p.host)}` : ""}</button>`
+          : `⌖ ${p.pid}${p.tty ? ` ${esc(p.tty)}` : ""}${nodeTag(p.node)}`;
+        return `<div>⌁ ${chip} ${p.cpu.toFixed(1)}% cpu · up ${esc(p.etime)} · ${esc(p.cwd || "?")}</div>`;
+      }).join("")
     : "";
 }
 
@@ -677,7 +717,10 @@ let cardRects = new Map();   // wt -> page-coords position at the last render
 
 function reconcileGrid(st, contentFor) {
   const grid = $("grid");
-  const names = st.worktrees.map(w => w.name);
+  // keyed by the card KEY, not the name: two nodes' same-named worktrees are
+  // two cards, and a name-keyed reconciler would collapse them into one DOM
+  // element that flickers between two machines' realities (ADR 0016)
+  const names = st.worktrees.map(w => cardKey(w));
   const want = new Set(names);
   const have = new Map([...grid.children].map(el => [el.dataset.wt, el]));
   structureHeld = false;
@@ -687,13 +730,14 @@ function reconcileGrid(st, contentFor) {
     else { el.remove(); have.delete(name); }
   }
   for (const w of st.worktrees) {
-    let el = have.get(w.name);
+    const key = cardKey(w);
+    let el = have.get(key);
     if (!el) {
       el = document.createElement("div");
       el.className = "card";
-      el.dataset.wt = w.name;
+      el.dataset.wt = key;
       grid.appendChild(el);   // the end of the grid never shifts existing cards
-      have.set(w.name, el);
+      have.set(key, el);
     }
     const html = contentFor(w);
     if (el._html !== html) { el._html = html; el.innerHTML = html; }
@@ -820,7 +864,7 @@ function openChat(key) {
   // ride along so a send at a terminal other than this session's own still
   // names a durable place instead of a bare pid.
   chatCtx = { key, account: r.s.account, sid: r.s.sid, wt: r.wt, own: r.s.pid };
-  $("dtitle").textContent = `${r.wt} · [${r.s.account}]`;
+  $("dtitle").textContent = `${keyLabel(r.wt)} · [${r.s.account}]`;
   $("dsub").textContent = r.s.topic || r.s.sid;
   const procs = reachableProcs(r.procs);
   // this session's own terminal, matched by account server-side — without it a
@@ -912,7 +956,7 @@ document.addEventListener("click", async (ev) => {
     return;
   }
   window._armFinish = null;
-  toast(closing ? `✕ closing ${wt}…` : `✓ finishing ${wt}…`);
+  toast(closing ? `✕ closing ${keyLabel(wt)}…` : `✓ finishing ${keyLabel(wt)}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
       headers: idemHeaders(),
@@ -995,7 +1039,7 @@ function clock(ts) {
 // after the reset); the armed chip opens the drawer to adjust or disarm; a
 // failed attempt stays visible here instead of vanishing.
 function schedControls(w, s) {
-  const key = `${w.name}|${s.sid}`;
+  const key = `${cardKey(w)}|${s.sid}`;
   const r = SCHED[key];
   if (r && r.status === "pending")
     return `<button class="abtn sched" onclick="openResumeDrawer(${escArg(key)})"
@@ -1050,7 +1094,7 @@ function openResumeDrawer(key) {
   if (!r) return;
   missionOpen = false; chatCtx = null; clearTimeout(chatTimer);
   const s = r.s, sched = SCHED[key], lim = s.limit || {};
-  $("dtitle").textContent = `⏱ auto-resume · ${r.wt}`;
+  $("dtitle").textContent = `⏱ auto-resume · ${keyLabel(r.wt)}`;
   $("dsub").textContent = `[${s.account}]${lim.worst ? " · " + lim.worst + " limit" : ""}`
     + (lim.resets_at ? ` · resets ${clock(lim.resets_at)}` : " · reset time unknown");
   $("dbody").innerHTML = `
@@ -1147,9 +1191,11 @@ function ruleBasedAutoPick() {
 // model & effort are static and never need refreshing
 function wtOptions() {
   const frees = lastState ? lastState.free_worktrees : [];
-  const all = lastState ? lastState.worktrees.map(w => w.name) : [];
+  // option VALUES are card keys (what /api/dispatch resolves); labels stay
+  // human — the bare name, with the node only when the board has several
+  const all = lastState ? lastState.worktrees.map(w => cardKey(w)) : [];
   return [{ v: "", t: `worktree: auto (${ruleBasedAutoPick() || (lastState ? "none free" : "…")})` },
-    ...all.map(n => ({ v: n, t: n + (frees.includes(n) ? " · free" : "") }))];
+    ...all.map(k => ({ v: k, t: keyLabel(k) + (frees.includes(k) ? " · free" : "") }))];
 }
 // The number that matters when placing a mission is the WEEKLY budget the
 // chosen model draws on — fable has its own weekly cap on top of the umbrella.
@@ -1282,7 +1328,7 @@ async function loadDispatchLog() {
         return `<div class="logrow">
         <span class="lt">${esc(logStamp(e))}</span>
         <span class="ls ${e.alive ? "on" : "off"}">${e.alive ? "● live" : "○ ended"}</span>
-        <span class="lm">${esc(e.worktree || "?")} · [${esc(e.account || "?")}]${e.model ? " · " + esc(e.model) : ""}${e.effort ? " · " + esc(e.effort) : ""}${e.routed ? " · routed" : ""}</span>
+        <span class="lm">${esc(keyLabel(e.worktree || "?"))} · [${esc(e.account || "?")}]${e.model ? " · " + esc(e.model) : ""}${e.effort ? " · " + esc(e.effort) : ""}${e.routed ? " · routed" : ""}</span>
         ${key ? `<button class="abtn lchat" onclick="event.stopPropagation();openChat(${escArg(key)})">✉ chat</button>`
               : e.alive ? `<span class="lwait">starting…</span>` : ""}
         <div class="lx" onclick="this.classList.toggle('open')">${esc(e.mission_original || "")}</div>

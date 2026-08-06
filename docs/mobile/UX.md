@@ -1397,6 +1397,11 @@ Validation calls `GET /api/hello` — needed anyway, because `HEAD` and `OPTIONS
               "reserve_percent": {"main": 20, "*": 0} } }
 ```
 
+> **Since ADR 0016 Phase 0 (2026-08-06)** a singular `hostname`/`user` names the **board
+> host** only; per-node identity is the `nodes` map riding `/api/state` and every frame,
+> and `config.roots` here is likewise one node's fact ([`NODES.md`](NODES.md) §3). Whatever
+> hello v1 ships must scope them so.
+
 `capabilities` is the version-skew mechanism, replacing the desktop's hand-written *"the server predates auto-resume; restart it with ./start.sh"*. Missing `idempotency` → dispatch and finish are **disabled** with an explanation, not merely warned about. Missing `identity_send` → chat is read-only. Missing `chat_paging` → the 40-turn marker stays. `config` is what makes the empty states and the auto-preview honest.
 
 **"Take a look first"** loads a **bundled sample fleet**, not `--demo`. `demo_state()` is missing five session fields real state always has, adds a bogus `git_root`, and `--demo` does not sandbox `/api/dispatchlog` or `/api/chat` — real mission prose and real transcripts leak. A demo mode that can put production identifiers into a screenshot is not a preview mode.
@@ -1420,7 +1425,7 @@ Validation calls `GET /api/hello` — needed anyway, because `HEAD` and `OPTIONS
 
 **Stale push:** if on arrival the status no longer matches the notification's reason, a dismissible banner says `this agent moved on — it's working again` rather than silently showing something else.
 
-**Why `resume_fired` targets the worktree:** `_tmux_resume` runs `claude --resume <sid>`, which may surface as a **different** sid, orphaning the schedule key `"{worktree}|{sid}"` and any session-level deep link. Until the server emits `resumed_to_sid`, the notification lands on the worktree.
+**Why `resume_fired` targets the worktree:** `_tmux_resume` runs `claude --resume <sid>`, which may surface as a **different** sid, orphaning the schedule key `"{worktree}|{sid}"` (whose `worktree` half is, since ADR 0016 Phase 0, the qualified card key `<node>/<worktree>` — NODES.md §3) and any session-level deep link. Until the server emits `resumed_to_sid`, the notification lands on the worktree.
 
 ## 4.11 Reply from the lock screen
 
@@ -1573,7 +1578,7 @@ Worst case ~720 `log1p` calls per pass. Free. Client and server still agree beca
 
 | element | why it is here |
 |---|---|
-| worktree name | identity; the join key into the board |
+| worktree name | the label. Identity — the join key into the board — is the qualified card key `<node>/<worktree>` since ADR 0016 Phase 0; the node shows as a badge only when the board holds more than one (NODES.md §7) |
 | `··` multiplicity dots | one per session, max 4 then `4+`. Distinguishes a 1-agent from a 6-agent worktree |
 | status pill | glyph **+ word** + colour — three channels, so colour is never alone |
 | `↓2317` chip | landing cost, tier-coloured. Greyed with a `⌁` prefix when this clone's fetch is stale |
@@ -2070,7 +2075,7 @@ The NSE calls **`GET /api/v1/events/{id}`** (`API.md` §9.22), substitutes the r
 
 `Server → Notifications → Message previews`: **Fetch on device** (default) · **Never — titles only** · **Include in the push** (with the trade stated).
 
-`at` is absolute, so the phone renders "asked 40 s ago" correctly even when Apple delayed delivery. `thread-id = "{server}|{worktree}"`, summary `%u more from ConfidAI-auth`.
+`at` is absolute, so the phone renders "asked 40 s ago" correctly even when Apple delayed delivery. `thread-id = "{server}|{worktree}"`, summary `%u more from ConfidAI-auth` — where `worktree` (here, in the payload's `o.wt`, and in the server's push-dedupe keys) is, since ADR 0016 Phase 0, the qualified card key `<node>/<worktree>`: two machines' same-named worktrees must not thread, collapse, or deep-link together (NODES.md §8).
 
 **Titles carry no leading symbol.** A `▲` in the title makes VoiceOver speak "up-pointing triangle" and Braille displays render the raw codepoint before *every* alert — a mandatory noise token imposed on exactly the population the glyph rule serves, adding nothing, because the word is already in the sentence.
 
@@ -3152,7 +3157,7 @@ Each is grep-checkable or lint-able.
 Small, real, cheap to handle — collected here rather than threaded through, because these are what produce confusing bug reports.
 
 1. **The QR encoder** is 250–400 lines, not ~120; needs a version-5-ish 37×37 symbol and a 4-module quiet zone; must render light-on-dark-safe with a `--pair --invert` escape.
-2. **`_tmux_resume` forks the session id.** `claude --resume <sid>` may surface as a *different* sid, orphaning the schedule key `"{worktree}|{sid}"`, the `resume_fired` deep link, and any armed Live Activity. Until the server emits `resumed_to_sid`, the notification deep-links to the **worktree**.
+2. **`_tmux_resume` forks the session id.** `claude --resume <sid>` may surface as a *different* sid, orphaning the schedule key `"{worktree}|{sid}"` (the `worktree` half being the qualified card key `<node>/<worktree>` since ADR 0016 Phase 0), the `resume_fired` deep link, and any armed Live Activity. Until the server emits `resumed_to_sid`, the notification deep-links to the **worktree**.
 3. **A session aging past `session_window_h` (48 h) vanishes from state entirely.** An open Chat screen shows `○ this session is no longer on the board — its transcript is older than 48 hours`, with the last-loaded transcript still readable; an armed schedule for it renders `⚠ session no longer tracked` and offers Disarm.
 4. **`POST /api/send` with a non-numeric pid** raises an uncaught `ValueError` server-side, killing the connection — the client sees a **transport error with an empty reply**, not an HTTP status. Error mapping treats "connection closed with zero bytes after a POST" as a distinct case: `the server rejected that request` + ‹Report›.
 5. **Attaching to an already-attached tmux session resizes the pane** and can garble a running TUI. Stated wherever an attach command is offered.

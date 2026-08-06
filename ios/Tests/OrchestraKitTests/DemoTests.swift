@@ -27,12 +27,18 @@ struct DemoTests {
         #expect(frame.cards.count == 6)
         #expect(frame.changedCards.count == 6, "no card in the demo is a removal")
         #expect(frame.removedCards.isEmpty)
-        // Every name in `order` must have a card: `composed` skips the ones that
+        // Every key in `order` must have a card: `composed` skips the ones that
         // do not, and a typo would silently shrink the board.
-        for name in frame.order {
-            #expect(frame.changedCards[name] != nil, "order names \(name) with no card")
+        for key in frame.order {
+            #expect(frame.changedCards[key] != nil, "order names \(key) with no card")
         }
         #expect(frame.freshness.oldest() != nil)
+        // The demo speaks the exact post-split wire (its documented promise):
+        // qualified keys, node-tagged cards, and a nodes map that describes
+        // every node the cards reference (NODES.md §6).
+        #expect(frame.order.allSatisfy { $0.hasPrefix("\(DemoFleet.node)/") })
+        #expect(frame.nodes[DemoFleet.node] != nil)
+        #expect(frame.changedCards.values.allSatisfy { $0.node == DemoFleet.node })
     }
 
     @Test func theWholeDemoWorldDecodes() throws {
@@ -125,7 +131,7 @@ struct DemoTests {
     @Test func futureInstantsStayInTheFuture() throws {
         let now = Date(timeIntervalSince1970: 1_900_000_000)
         let cards = try boardCards(now: now)
-        let limited = try #require(cards.first { $0.name == DemoFleet.limitWorktree })
+        let limited = try #require(cards.first { $0.id == DemoFleet.limitWorktree })
         let resets = try #require(limited.sessions.first?.limit?.resets)
         #expect(resets > now)
         #expect(resets.timeIntervalSince(now) < 3 * 3600)
@@ -240,10 +246,16 @@ struct DemoTests {
         #expect(state.worktrees.count == 6)
         #expect(state.hostname == DemoFleet.hostname)
         #expect(state.user == DemoFleet.user)
-        // `free_worktrees` is DERIVED by the applier from the cards. If this is
-        // right, the frame really went through it.
+        // `free_worktrees` is DERIVED by the applier from the cards — as
+        // qualified keys since ADR 0016. If this is right, the frame really
+        // went through it.
         #expect(state.freeWorktrees == [DemoFleet.freeWorktree])
         #expect(state.resumes.count == 1)
+        // One node: the demo board must render exactly as a single-machine
+        // board does — no badge — while still speaking the qualified wire.
+        #expect(state.boardNode == DemoFleet.node)
+        #expect(state.nodes.count == 1)
+        #expect(!state.multiNode)
         #expect(store.framesApplied == 1)
         #expect(store.version == 214)
         #expect(store.unknownStatuses == 0)

@@ -58,14 +58,19 @@ class TestWorktreeReservation(unittest.TestCase):
 class TestAutoPickSubtractsReservations(unittest.TestCase):
     """Two auto-picks off the same snapshot must not land in one worktree."""
 
+    # Board cards, so they carry `node` — the picker only chooses LOCAL cards
+    # now (ADR 0016), and the node id is pinned to "n1" in setUp.
     STATE = {"worktrees": [
-        {"name": "a", "availability": "free", "git": {"dirty": 0}},
-        {"name": "b", "availability": "free", "git": {"dirty": 3}},
-        {"name": "busy", "availability": "busy", "git": {"dirty": 0}},
+        {"name": "a", "node": "n1", "availability": "free", "git": {"dirty": 0}},
+        {"name": "b", "node": "n1", "availability": "free", "git": {"dirty": 3}},
+        {"name": "busy", "node": "n1", "availability": "busy", "git": {"dirty": 0}},
     ]}
 
     def setUp(self):
         fb.dispatch._wt_reservations.clear()
+        self._node = fb.CFG.get("node")
+        fb.CFG["node"] = "n1"
+        fb.node._reset()
         self._saved = (fb.observer.cached_state, fb.limits.cached_limits,
                        fb.limits.limits_by_account)
         fb.observer.cached_state = lambda: {
@@ -77,6 +82,8 @@ class TestAutoPickSubtractsReservations(unittest.TestCase):
     def tearDown(self):
         (fb.observer.cached_state, fb.limits.cached_limits,
          fb.limits.limits_by_account) = self._saved
+        fb.CFG["node"] = self._node
+        fb.node._reset()
         fb.dispatch._wt_reservations.clear()
 
     def test_two_picks_choose_two_different_worktrees(self):

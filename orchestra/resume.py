@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 
-from . import (config, shell, gitrepo, transcripts, limits, observer,
+from . import (config, node, shell, gitrepo, transcripts, limits, observer,
                terminal, dispatch)
 
 
@@ -108,16 +108,26 @@ def _resume_set(key, **updates):
 
 
 def resume_public():
-    """The schedules, shaped for the board (rides along on /api/state)."""
+    """The schedules, shaped for the board (rides along on /api/state).
+
+    QUALIFIED on the way out (NODES.md §4): internally `_resumes` keys on the
+    node-local bare name — resuming is actuation, and actuation is local —
+    but on the wire a single string naming a card is the card key
+    `<node>/<worktree>`, so both the dict key and each record's `worktree`
+    field are qualified here, at the boundary, with the local node id.
+    """
     if config.DEMO:
         return demo_resumes()
     with _resumes_lock:
-        return {k: dict(r) for k, r in _resumes.items()}
+        return {f"{node.key(r['worktree'])}|{r['sid']}":
+                {**r, "worktree": node.key(r["worktree"])}
+                for r in _resumes.values()}
 
 
 def demo_resumes():
-    return {"orbital-web|demo-limit-1": {
-        "worktree": "orbital-web", "sid": "demo-limit-1", "account": "work",
+    return {"starbase/orbital-web|demo-limit-1": {
+        "worktree": "starbase/orbital-web", "sid": "demo-limit-1",
+        "account": "work",
         "model": "opus-4-8", "delay_s": 60, "status": "pending",
         "due_at": time.time() + 7620, "attempts": 0, "message": None}}
 
@@ -196,8 +206,15 @@ def cancel_resume(worktree, sid):
 
 
 def _session_on_board(state, worktree, sid):
-    """(session, its own live proc) for a schedule key, from board state."""
-    card = next((w for w in state["worktrees"] if w["name"] == worktree), None)
+    """(session, its own live proc) for a schedule key, from board state.
+
+    `worktree` is the schedule's node-local bare name; the board's cards are
+    merged and node-tagged (ADR 0016), so the match is against THIS node's
+    card of that name — never against another machine's same-named one.
+    """
+    card = next((w for w in state["worktrees"]
+                 if w["name"] == worktree
+                 and w.get("node") == node.node_id()), None)
     if not card:
         return None, None
     s = next((x for x in card["sessions"] if x.get("sid") == sid), None)

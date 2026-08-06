@@ -92,7 +92,9 @@ public final class ActionsStore {
         case close
     }
 
-    /// Keyed by worktree: two different worktrees may be closing out at once.
+    /// Keyed by the card key `<node>/<worktree>` (ADR 0016): two different
+    /// worktrees may be closing out at once — including two same-named ones on
+    /// two machines, which a bare name would conflate.
     public private(set) var finishes: [String: FinishRun] = [:]
 
     /// **The server-restart hazard, and the only defence a client has.**
@@ -107,13 +109,19 @@ public final class ActionsStore {
     ///
     /// It is honest about its limits: it only knows about briefs **this phone**
     /// sent. A brief sent from the desktop board is invisible to it.
+    ///
+    /// Keyed by the card key `<node>/<worktree>` — the client registry follows
+    /// the card's identity (NODES.md §9), so a brief remembered for one node's
+    /// `ConfidAI2` never warns about another node's.
     public private(set) var briefsSentLocally: [String: Date] = [:]
     public static let briefMemory: TimeInterval = 30 * 60
 
     // MARK: - Resume
 
-    /// The last thing an arm/disarm said, per `"{worktree}|{sid}"`. Shown inline
-    /// on the sheet that caused it and cleared when that sheet closes.
+    /// The last thing an arm/disarm said, per `"<node>/<worktree>|{sid}"` —
+    /// `resumeKey` over the CARD KEY, so the string matches the server's own
+    /// `resumes` keys byte for byte. Shown inline on the sheet that caused it
+    /// and cleared when that sheet closes.
     public private(set) var resumeNotices: [String: ResumeReply] = [:]
 
     // MARK: -
@@ -336,9 +344,10 @@ public final class ActionsStore {
         finishes.removeValue(forKey: worktree)
     }
 
-    /// Record that a brief went out. One writer in production —
-    /// `runFinish` — and it is a named method rather than an inline assignment so
-    /// the restart detector can be driven in a test without a network.
+    /// Record that a brief went out, keyed by the card key. One writer in
+    /// production — `runFinish` — and it is a named method rather than an inline
+    /// assignment so the restart detector can be driven in a test without a
+    /// network.
     func noteBriefSent(_ worktree: String, at moment: Date = Date()) {
         briefsSentLocally[worktree] = moment
     }
@@ -349,7 +358,7 @@ public final class ActionsStore {
     /// reports `closeout_sent`, and an agent is still live on it. That combination
     /// is the restart — a genuine clean close removes the live proc too.
     public func serverForgotBrief(card: Worktree, now: Date = Date()) -> Bool {
-        guard let sent = briefsSentLocally[card.name],
+        guard let sent = briefsSentLocally[card.key],
               now.timeIntervalSince(sent) < Self.briefMemory else { return false }
         return !card.isCloseoutPending && !card.liveProcs.isEmpty
     }
@@ -362,6 +371,10 @@ public final class ActionsStore {
 
     // MARK: - Resume
 
+    /// The server's own schedule key, reconstructed byte for byte: `worktree`
+    /// is the CARD KEY `<node>/<worktree>`, so this yields exactly the string
+    /// `resume_public` keys `/api/state.resumes` with —
+    /// `"<node>/<worktree>|{sid}"`, literal pipe.
     public static func resumeKey(worktree: String, sid: String) -> String {
         "\(worktree)|\(sid)"
     }

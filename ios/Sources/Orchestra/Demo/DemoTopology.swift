@@ -10,8 +10,10 @@ import Foundation
 /// The shape is the **legacy** one `gitrepo.branch_topology` really writes —
 /// `fork_ts`/`tip_ts` rather than `_at`, `worktree` rather than `worktree_id`, no
 /// `axis`, no `role`, no `dropped[]` — matching `Model/Topology.swift`'s findings
-/// rather than `UX.md` §5.3. One group, because a demo with two origins would be
-/// demonstrating a coincidence.
+/// rather than `UX.md` §5.3, plus the post-split `node` on every branch
+/// (ADR 0016): the map joins the board by `<node>/<worktree>`, and the demo's
+/// node is `starbase`, matching `DemoFleet`. One group, because a demo with two
+/// origins would be demonstrating a coincidence.
 ///
 /// The server clamps `fork_ts` to `min(fork_ts, tip_ts)` before it serialises
 /// (`gitrepo.py:228`), so no fork here sits right of its own tip.
@@ -35,6 +37,7 @@ public enum DemoTopology {
           "branches": [
             {
               "worktree": "search-index",
+              "node": "starbase",
               "branch": "perf/incremental-reindex",
               "fork_ts": 1799979000,
               "tip_ts": 1799996820,
@@ -47,6 +50,7 @@ public enum DemoTopology {
             },
             {
               "worktree": "payments-webhook",
+              "node": "starbase",
               "branch": "fix/webhook-retries",
               "fork_ts": 1799988000,
               "tip_ts": 1799992600,
@@ -59,6 +63,7 @@ public enum DemoTopology {
             },
             {
               "worktree": "checkout-flow",
+              "node": "starbase",
               "branch": "feat/guest-checkout",
               "fork_ts": 1799965800,
               "tip_ts": 1799999520,
@@ -71,6 +76,7 @@ public enum DemoTopology {
             },
             {
               "worktree": "api-gateway",
+              "node": "starbase",
               "branch": "chore/rate-limit-headers",
               "fork_ts": 1799992800,
               "tip_ts": 1799992800,
@@ -83,6 +89,7 @@ public enum DemoTopology {
             },
             {
               "worktree": "release-notes",
+              "node": "starbase",
               "branch": "docs/release-1-4",
               "fork_ts": 1799950000,
               "tip_ts": 1799983800,
@@ -95,6 +102,7 @@ public enum DemoTopology {
             },
             {
               "worktree": "design-tokens",
+              "node": "starbase",
               "branch": "design/token-pass",
               "fork_ts": 1799900000,
               "tip_ts": 1799908200,

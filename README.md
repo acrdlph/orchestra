@@ -320,6 +320,7 @@ provider token with `403 InvalidProviderToken`.
 | key | default | meaning |
 |---|---|---|
 | `roots` | `[cwd]` | dirs whose git-repo children are watched |
+| `node` | `""` | this machine's node id — cards key as `<node>/<worktree>` so one board can watch several machines (ADR 0016). Empty mints a stable id once (`node.json`); set it only for taste (`"work"`). Lowercase letters, digits, `-` |
 | `pattern` | `""` | regex filter on worktree dir names |
 | `homes` | `[]` | Claude home dirs; `[]` auto-discovers `~/.claude*` |
 | `host` / `port` | `127.0.0.1` / `4242` | the board serves your transcript text. Off loopback it refuses to start until a device is registered (`--add-device`), and refuses `0.0.0.0` outright |

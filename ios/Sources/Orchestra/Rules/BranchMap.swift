@@ -163,19 +163,21 @@ public enum BranchMap {
     }
 
     /// A parked worktree collapses only when it is also idle. `dirty == 0` we have
-    /// from the topology; the live board status is the other half, joined by name.
+    /// from the topology; the live board status is the other half, joined by the
+    /// branch key `<node>/<worktree>` (ADR 0016).
     public static func isCollapsibleParked(_ b: TopoBranch, section: BoardSection?) -> Bool {
         role(b) == .parked && b.dirty == 0 && (section == nil || section == .free)
     }
 
     /// One branch, everything the view needs pre-decided so the row is dumb.
     public struct Row: Sendable, Equatable, Identifiable {
-        public var id: String { branch.worktree }
+        public var id: String { branch.key }
         public let branch: TopoBranch
         public let role: Role
         public let tier: DebtTier?
-        /// The live board section for this worktree, joined by name. `nil` when the
-        /// board has no card for it (rare — same source — but honest).
+        /// The live board section for this worktree, joined by the branch KEY.
+        /// `nil` when the board has no card for it (rare — same source — but
+        /// honest).
         public let section: BoardSection?
         public let stalled: Bool
 
@@ -202,13 +204,15 @@ public enum BranchMap {
         }
     }
 
+    /// `sections` is keyed by the branch KEY `<node>/<worktree>` — the same
+    /// dictionary `FleetView` builds from cards by `card.key`.
     public static func place(_ group: TopoGroup,
                              sections: [String: BoardSection],
                              sort: Sort, range: Range, now: Double) -> Placed {
         let maxAge = range.maxForkAgeS
         let rows = group.branches
             .filter { maxAge == nil || (now - $0.forkTs) <= maxAge! }
-            .map { Row(branch: $0, section: sections[$0.worktree], now: now) }
+            .map { Row(branch: $0, section: sections[$0.key], now: now) }
 
         var main: [Row] = [], stalled: [Row] = [], parked: [Row] = []
         for r in rows {
@@ -218,22 +222,31 @@ public enum BranchMap {
         }
         return Placed(main: sorted(main, by: sort),
                       stalled: sorted(stalled, by: sort),
-                      parked: parked.sorted { $0.branch.worktree.localizedCaseInsensitiveCompare($1.branch.worktree) == .orderedAscending })
+                      parked: parked.sorted { nameAscending($0, $1) })
+    }
+
+    /// Display-name order with the KEY as tiebreak: two nodes' same-named
+    /// worktrees would otherwise sort non-deterministically, and an order that
+    /// differs on every refresh is an order nobody can test.
+    static func nameAscending(_ a: Row, _ b: Row) -> Bool {
+        switch a.branch.worktree.localizedCaseInsensitiveCompare(b.branch.worktree) {
+        case .orderedAscending: true
+        case .orderedDescending: false
+        case .orderedSame: a.branch.key < b.branch.key
+        }
     }
 
     static func sorted(_ rows: [Row], by sort: Sort) -> [Row] {
         switch sort {
         case .name:
-            return rows.sorted {
-                $0.branch.worktree.localizedCaseInsensitiveCompare($1.branch.worktree) == .orderedAscending
-            }
+            return rows.sorted { nameAscending($0, $1) }
         case .debt:
             // Behind, descending — the whole point of the sort. Name breaks ties
             // so the order is stable across refreshes.
             return rows.sorted {
                 $0.branch.behind != $1.branch.behind
                     ? $0.branch.behind > $1.branch.behind
-                    : $0.branch.worktree.localizedCaseInsensitiveCompare($1.branch.worktree) == .orderedAscending
+                    : nameAscending($0, $1)
             }
         case .recent:
             return rows.sorted { $0.branch.tipTs > $1.branch.tipTs }

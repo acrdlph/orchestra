@@ -54,7 +54,7 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict, replace
 
-from . import config
+from . import config, node
 
 
 # --------------------------------------------------------------- vocabulary
@@ -163,7 +163,11 @@ def project(snapshot=None, resumes=None, dispatch_jobs=None, accounts=None):
     if snapshot is not None:
         cards = getattr(snapshot, "cards", None)
         if cards is None and isinstance(snapshot, dict):
-            cards = {c["name"]: c for c in snapshot.get("worktrees", [])}
+            # The same key `Observer.publish` mints (ADR 0016): the push
+            # pipeline must diff the same world the board serves, or two
+            # nodes' same-named worktrees collapse into one condition here
+            # while the board shows two cards.
+            cards = {node.card_key(c): c for c in snapshot.get("worktrees", [])}
         for name, card in (cards or {}).items():
             worktrees[name] = card.get("availability")
             git = card.get("git") or {}
@@ -611,8 +615,22 @@ ANSWERABLE_EVENTS = frozenset({"session.needs_answer", "session.blocked"})
 
 def _title(event):
     """The first line, and it carries NO leading glyph — see UX.md §8.5. The
-    worktree is the subject because that is what the user navigates by."""
-    wt = event.worktree or "orchestra"
+    worktree is the subject because that is what the user navigates by.
+
+    THE SUBJECT IS THE BARE NAME, spoken, not the key (NODES.md §7): the lock
+    screen has no badge to lean on, so a card on another machine says so in
+    words — "ConfidAI2 on work needs an answer" — while a local card reads
+    exactly as it did before there were nodes. The `wt`/`thread-id`/
+    `dedupe_key` fields underneath stay fully qualified; display and identity
+    never trade places (the iOS client keys its routing on those, not on
+    this sentence).
+    """
+    nid, name = node.split_key(event.worktree or "orchestra")
+    try:
+        foreign = nid is not None and nid != node.node_id()
+    except ValueError:          # an unresolvable local id must not kill a push
+        foreign = nid is not None
+    wt = f"{name} on {nid}" if foreign else name
     return {
         "session.needs_answer": f"{wt} needs an answer",
         "session.blocked": f"{wt} is blocked",

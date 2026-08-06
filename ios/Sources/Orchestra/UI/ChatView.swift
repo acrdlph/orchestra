@@ -17,6 +17,9 @@ import SwiftUI
 /// single space before it types, so this composer does the same **as you type**.
 /// Return inserts a space. WYSIWYG or nothing (`UX.md` §3.3.2).
 public struct ChatView: View {
+    /// The card KEY `<node>/<worktree>` — it addresses the card and rides the
+    /// `/api/send` body as the server's second assertion (ADR 0016). Display
+    /// shows the bare name.
     private let worktree: String
     private let account: String
     private let sid: String
@@ -96,7 +99,7 @@ public struct ChatView: View {
     }
 
     private var card: Worktree? {
-        fleet.state?.worktrees.first { $0.name == worktree }
+        fleet.state?.worktrees.first { $0.id == worktree }
     }
 
     /// Looked up on every pass. Nil once the session falls off the board — a
@@ -126,12 +129,12 @@ public struct ChatView: View {
         // the inset.
         content
             .background { Palette.canvas.ignoresSafeArea() }
-            .navigationTitle(worktree)
+            .navigationTitle(CardKey.bareName(worktree))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
-                        Text(verbatim: "\(worktree) · [\(account)]")
+                        Text(verbatim: "\(CardKey.bareName(worktree)) · [\(account)]")
                             .font(OrcFont.status)
                             .foregroundStyle(Palette.textPrimary)
                         if let topic = session?.topic, !topic.isEmpty {

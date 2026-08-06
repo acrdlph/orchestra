@@ -50,9 +50,15 @@ struct MapDetailSheet: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text(branch.worktree)
-                    .font(OrcFont.title)
-                    .foregroundStyle(Palette.textPrimary)
+                HStack(spacing: Space.sm) {
+                    Text(branch.worktree)
+                        .font(OrcFont.title)
+                        .foregroundStyle(Palette.textPrimary)
+                    // Only on a multi-node board — the join already gated it.
+                    if let node = info?.nodeBadge, !node.isEmpty {
+                        NodeBadge(node)
+                    }
+                }
                 if branch.isDetached {
                     Label("detached HEAD · \(branch.ahead) unmerged", systemImage: "exclamationmark.triangle")
                         .font(OrcFont.code)

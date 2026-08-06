@@ -16,8 +16,8 @@ reachable from the tailnet (API.md §2.5 puts every device route behind
 import sys
 import threading
 
-from orchestra import (auth, config, disk, notify, observer, resume, server,
-                       tailnet)
+from orchestra import (auth, config, disk, node, notify, observer, resume,
+                       server, tailnet)
 
 
 def _devices(args):
@@ -136,6 +136,15 @@ def main():
     config.DEMO = args.demo
     if _devices(args) or _maintenance(args):
         return
+    # Resolve the node id NOW — the same shape as the bad-`pattern` refusal in
+    # load_config, and for the same reason: a config key "node" that cannot key
+    # cards would otherwise surface as a wrongly-merged board at 3am rather
+    # than a sentence at boot. This is also what mints and persists node.json
+    # on first run, so the id exists before anything composes a card.
+    try:
+        node.node_id()
+    except ValueError as e:
+        sys.exit(f"orchestra: {e}")
     if args.tailnet:
         _resolve_host()
     # A REFUSAL, not the warning that used to stand here (ADR 0013: "silent

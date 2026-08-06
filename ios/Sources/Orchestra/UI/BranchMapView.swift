@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// What the map needs about each worktree from the LIVE board, joined by name.
+/// What the map needs about each worktree from the LIVE board, joined by the
+/// card KEY `<node>/<worktree>` (ADR 0016).
 ///
 /// The topology payload has no status, no session count, and no liveness — those
 /// ride the state stream (§5.11). This is the join: computed from `FleetStore` in
@@ -10,10 +11,16 @@ public struct MapBoardInfo: Sendable, Equatable {
     public let section: BoardSection
     public let sessionCount: Int
     public let working: Bool
-    public init(section: BoardSection, sessionCount: Int, working: Bool) {
+    /// The node id to badge the row with, already gated on the multi-node board
+    /// at the join (`FleetView.boardJoin`) — nil on a single-machine board, so
+    /// that board renders exactly as it did (NODES.md §7).
+    public let nodeBadge: String?
+    public init(section: BoardSection, sessionCount: Int, working: Bool,
+                nodeBadge: String? = nil) {
         self.section = section
         self.sessionCount = sessionCount
         self.working = working
+        self.nodeBadge = nodeBadge
     }
 }
 
@@ -25,10 +32,11 @@ public struct MapBoardInfo: Sendable, Equatable {
 /// labels does not show without arithmetic.
 public struct BranchMapView: View {
     @Bindable private var store: TopologyStore
-    /// The board join, by worktree name. Read live so tips recolour on a frame.
+    /// The board join, by card KEY. Read live so tips recolour on a frame.
     private let board: [String: MapBoardInfo]
-    /// Every worktree the board knows — to name the ones topology dropped.
+    /// Every card KEY the board knows — to name the ones topology dropped.
     private let boardWorktrees: [String]
+    /// Called with the branch's card KEY — it lands on `FleetRoute.worktree`.
     private let onOpenWorktree: (String) -> Void
 
     @State private var sort: BranchMap.Sort = .status
@@ -59,9 +67,9 @@ public struct BranchMapView: View {
         }
         .sheet(item: $selected) { branch in
             MapDetailSheet(branch: branch, group: group(of: branch),
-                           info: board[branch.worktree], now: now) {
+                           info: board[branch.key], now: now) {
                 selected = nil
-                onOpenWorktree(branch.worktree)
+                onOpenWorktree(branch.key)
             }
             .presentationDetents([.large])
             .preferredColorScheme(.dark)
@@ -101,7 +109,7 @@ public struct BranchMapView: View {
     }
 
     private func group(of branch: TopoBranch) -> TopoGroup? {
-        store.topology?.groups.first { $0.branches.contains { $0.worktree == branch.worktree } }
+        store.topology?.groups.first { $0.branches.contains { $0.key == branch.key } }
     }
 
     private var sections: [String: BoardSection] {
@@ -120,8 +128,12 @@ public struct BranchMapView: View {
                     ForEach(groups) { grp in
                         groupView(grp)
                     }
+                    // `unmapped` differences KEYS; the footer shows bare names
+                    // (NODES.md §7 — the key is identity, not typography).
                     let dropped = store.unmapped(boardWorktrees: boardWorktrees)
-                    if !dropped.isEmpty { MapDroppedFooter(names: dropped) }
+                    if !dropped.isEmpty {
+                        MapDroppedFooter(names: dropped.map(CardKey.bareName))
+                    }
                     Color.clear.frame(height: Space.xxl)
                 }
             }
@@ -155,7 +167,7 @@ public struct BranchMapView: View {
     private func rowButton(_ row: BranchMap.Row, grp: TopoGroup, axis: BranchMap.AxisScale) -> some View {
         Button { selected = row.branch } label: {
             MapRowView(row: row, trunkTs: grp.trunkTs, axis: axis,
-                       info: board[row.branch.worktree], now: now)
+                       info: board[row.branch.key], now: now)
         }
         .buttonStyle(.plain)
         .padding(.horizontal, Space.lg)
@@ -233,6 +245,9 @@ struct MapRowView: View {
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let node = info?.nodeBadge, !node.isEmpty {
+                    NodeBadge(node)
+                }
                 if let dots = multiplicityDots {
                     Text(dots)
                         .font(OrcFont.meta)

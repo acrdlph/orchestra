@@ -66,9 +66,12 @@ What is load-bearing and correct:
   `AskUserQuestion` is read off disk before any clock is consulted (L585).
 - **Acting is always an explicit click**, and always by talking to a terminal — `tmux
   send-keys`, or AppleScript into Terminal.app/iTerm2. There is no privileged channel.
-- **The refresh discipline is genuinely good.** Per-card DOM keyed by worktree name, a
-  re-sort hold while the pointer is on the grid, and a capture-phase click shield that
-  swallows a click landing on a card that moved in the last 600 ms.
+- **The refresh discipline is genuinely good.** Per-card DOM keyed by worktree name (since
+  ADR 0016 Phase 0, 2026-08-06: by the qualified card key `<node>/<worktree>` —
+  [`NODES.md`](NODES.md) §2 — because a name-keyed reconciler collapses two machines'
+  same-named cards into one flickering element), a re-sort hold while the pointer is on the
+  grid, and a capture-phase click shield that swallows a click landing on a card that moved
+  in the last 600 ms.
 - **Everything is a plain dict.** No classes, no ORM, no schema. Tests mock by assigning
   module attributes (`fb.run = FakeGit()`), which works because every call resolves through
   the module namespace at call time. 142 tests, 8.47 s, stdlib `unittest`, no pip.
@@ -265,7 +268,10 @@ single rule is what makes the delta protocol worth 277× instead of 1×.
 Worktrees key on `blake2b(abspath)`, not on the basename — `discover_worktrees` dedupes by
 path (L127) and iterates every root, so two roots each holding a `ConfidAI` dir produce two
 cards with the same name. Agents key on a tmux target or a tty salted with first-seen time,
-never on a pid.
+never on a pid. ADR 0016 (Phase 0 built 2026-08-06) widened this principle's scope: an
+abspath is unique only within one machine, so durable card identity folds in the node id —
+on the shipped legacy wire the card key is `<node>/<worktree>` ([`NODES.md`](NODES.md) §2),
+and whatever id v1 mints inherits the same fold (API.md §7.1's note).
 
 **4. Every mutation is idempotent and asserts what it expects.** `Idempotency-Key` on every
 POST, reserved write-ahead before the side effect, plus an `expect` block naming the agent id
@@ -1190,7 +1196,9 @@ w/<wid>/p | w/<wid>/order          leaves, replaced whole
 ```
 
 `order` and `w/<wid>/order` are **explicit paths** because array indices are unusable:
-`collect_state` re-sorts cards by `(severity, name.lower())` (L826) and sessions by
+`collect_state` re-sorts cards by `(severity, name.lower())` (L826) — since ADR 0016 Phase 0
+the merged board sorts by `(severity, name.lower(), node)`, byte-identical on one node and a
+deterministic interleave on many ([`NODES.md`](NODES.md) §5) — and sessions by
 `(4.5 if handed_to else rank[status], age_s)` (L777). The 4.5 handoff weight is a subtle,
 load-bearing decision that must not be reimplemented in Swift against a locally-derived age —
 the tie-breaks would differ from the desktop board for the same fleet. Emitting the sid order

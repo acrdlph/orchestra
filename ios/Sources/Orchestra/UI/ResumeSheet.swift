@@ -17,6 +17,9 @@ import SwiftUI
 /// * **A re-arm at the armed moment is real.** The board re-checks the limit when
 ///   it fires; if it still binds it re-arms for the next reset, up to ten times.
 public struct ResumeSheet: View {
+    /// The card KEY `<node>/<worktree>` — the wire's `worktree` field and both
+    /// halves of the schedule key are qualified (ADR 0016). Display shows the
+    /// bare name.
     private let worktree: String
     private let session: Session
     @Bindable private var fleet: FleetStore
@@ -41,7 +44,7 @@ public struct ResumeSheet: View {
     /// The live session, so a limit that resolves while this sheet is open is
     /// visible rather than frozen at the value it was pushed with.
     private var live: Session {
-        fleet.state?.worktrees.first { $0.name == worktree }?
+        fleet.state?.worktrees.first { $0.id == worktree }?
             .sessions.first { $0.sid == session.sid } ?? session
     }
 
@@ -117,7 +120,7 @@ public struct ResumeSheet: View {
 
     @ViewBuilder
     private var header: some View {
-        SheetHeader("Auto-resume · \(worktree)", symbol: "timer",
+        SheetHeader("Auto-resume · \(CardKey.bareName(worktree))", symbol: "timer",
                     hue: Palette.statusWorking)
         VStack(alignment: .leading, spacing: Space.xxs) {
             Text(verbatim: "[\(live.account)] · \(live.shortID)")
@@ -206,7 +209,7 @@ public struct ResumeSheet: View {
                 ServerSays(message, tone: schedule.status == "failed" ? .refusal : .ok)
             }
             if let blocker = firingBlocker {
-                ServerSays("queued behind \(blocker.worktree) — the resume loop fires "
+                ServerSays("queued behind \(CardKey.bareName(blocker.worktree)) — the resume loop fires "
                            + "due schedules one at a time, in insertion order, and "
                            + "that one is overdue. This is still freely cancellable.",
                            tone: .unknown)
