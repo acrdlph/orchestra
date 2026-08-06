@@ -29,7 +29,16 @@ public struct MissionComposer: View {
     @Bindable private var limits: LimitsStore
     @Bindable private var actions: ActionsStore
     @Bindable private var drafts: DraftStore
+    /// The image upload. From the environment rather than the initialiser
+    /// because this sheet is presented from `FleetView`, which is not a
+    /// composition root; optional so a preview without one degrades to a
+    /// composer with no paperclip.
+    @Environment(UploadStore.self) private var uploads: UploadStore?
     @Environment(\.dismiss) private var dismiss
+
+    /// The editor's caret, so an uploaded path lands where the user was typing.
+    /// `TextEditor(text:selection:)` is iOS 18, which is this app's floor.
+    @State private var caret: TextSelection?
 
     /// The editor's focus, held so it can be **cleared before a picker is
     /// presented**. See `OptionPickerSheet` for what a live keyboard did to the
@@ -243,7 +252,7 @@ public struct MissionComposer: View {
     private var editor: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.md) {
-                TextEditor(text: missionText)
+                TextEditor(text: missionText, selection: $caret)
                     .font(OrcFont.body)
                     .foregroundStyle(Palette.textPrimary)
                     .scrollContentBackground(.hidden)
@@ -263,7 +272,21 @@ public struct MissionComposer: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                draftLine
+                // The same two views the chat composer uses, in the layout this
+                // screen has: the strip and the status under the editor, the
+                // paperclip beside the draft line. One implementation, so the
+                // demo refusal, the size precheck and the insert rule cannot
+                // drift between the two screens.
+                if let uploads {
+                    AttachmentStrip(uploads: uploads, text: missionText)
+                }
+                HStack(spacing: Space.md) {
+                    if let uploads {
+                        AttachButton(uploads: uploads, isDemo: fleet.isDemo,
+                                     text: missionText, selection: $caret)
+                    }
+                    draftLine
+                }
 
                 pickers
                 if let disabledReason {

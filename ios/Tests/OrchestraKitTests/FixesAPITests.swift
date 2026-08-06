@@ -42,12 +42,25 @@ struct EndpointRequestTests {
             ("pushSettings", try .pushSettings(body: ["quiet": true])),
             ("pushMute", try .pushMute(minutes: 30)),
             ("pushTest", .pushTest()),
+            ("upload", try .upload(base64: "aGk=", name: "IMG_0421.PNG")),
         ]
     }
 
-    /// Every route the client can build, exactly the mutations and no reads.
+    /// The mutations that carry an **idempotency identity** — every POST except
+    /// two, and each exclusion is a fact about the server.
+    ///
+    /// * `pair` is the bootstrap: its code is single-use, so a replayed claim is
+    ///   refused by the code rather than by a key.
+    /// * `upload` is deliberately absent from `idem.MUTATION_ROUTES` because it
+    ///   does not need one — the server names the file `sha256(bytes)[:16]`, so a
+    ///   retry lands on the same path and writes no second file (`uploads.py`
+    ///   rule 2). That is exactly what a key would buy, without the server
+    ///   storing a response for an hour. `UploadWireTests` pins the absence from
+    ///   the other side.
     static func mutations() throws -> [(name: String, endpoint: Endpoint)] {
-        try all().filter { $0.endpoint.method == .post && $0.name != "pair" }
+        try all().filter {
+            $0.endpoint.method == .post && $0.name != "pair" && $0.name != "upload"
+        }
     }
 
     // MARK: - F1 / F3: the timeout invariant that would have caught the HIGH bug

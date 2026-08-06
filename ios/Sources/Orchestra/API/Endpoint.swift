@@ -322,6 +322,38 @@ public struct Endpoint: Sendable {
                         timeout: 15)
     }
 
+    // MARK: - Uploads
+
+    /// `POST /api/v1/uploads` — one image from this phone, written to the Mac.
+    ///
+    /// **Not a `mutation`, and the missing `Idempotency-Key` is the point.** The
+    /// route is deliberately absent from `idem.MUTATION_ROUTES` because it does
+    /// not need one: the server names the file `sha256(bytes)[:16]`, so a retry
+    /// of the same image lands on the same path and writes no second file
+    /// (`uploads.py` rule 2). That is exactly the property a key would buy,
+    /// without the server storing a copy of the response for an hour. Sending one
+    /// anyway would be harmless and would also be a claim about a contract that
+    /// is not there.
+    ///
+    /// `Content-Type: application/json` still is not optional — it is the CSRF
+    /// guard, and `urlRequest` sets it for any endpoint with a body.
+    /// `strictQueryEncoding` does not apply: there is no query, this is a body.
+    ///
+    /// `name` is a hint the server **discards**. It rides because a client
+    /// naturally has one and it costs a few bytes of the envelope; it never
+    /// reaches a filesystem and never decides an extension.
+    ///
+    /// The deadline is 60 s because the body can be ten megabytes over a tunnel
+    /// and `timeoutInterval` is the inter-packet idle timer rather than a whole-
+    /// transfer cap — a phone on a slow uplink is still making progress.
+    public static func upload(base64 data: String, name: String?) throws -> Endpoint {
+        var payload: [String: String] = ["data": data]
+        if let name = UploadBudget.clip(name) { payload["name"] = name }
+        return Endpoint(method: .post, path: "/api/v1/uploads",
+                        body: try JSONSerialization.data(withJSONObject: payload),
+                        timeout: 60, requiresToken: true)
+    }
+
     // MARK: - Push
 
     /// `POST /api/v1/devices/self/push` — register (or re-register) this device's

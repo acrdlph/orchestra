@@ -48,6 +48,16 @@ public struct ChatView: View {
     /// and neither is a composition root. Optional so that a subtree that never
     /// installs one degrades to a screen-lifetime draft instead of trapping.
     @Environment(DraftStore.self) private var drafts: DraftStore?
+    /// The upload in flight and the thumbnails of the ones that landed. From the
+    /// environment for `drafts`' reason, and app-level for the same one: an
+    /// upload started here has to survive the lock destroying this screen.
+    /// Optional so a subtree without one degrades to a composer with no
+    /// paperclip rather than trapping.
+    @Environment(UploadStore.self) private var uploads: UploadStore?
+    /// The caret, so an uploaded path lands where the user was typing instead of
+    /// always at the end. `TextField(text:selection:)` is iOS 18, which is this
+    /// app's floor.
+    @State private var caret: TextSelection?
     @FocusState private var composerFocused: Bool
     /// The connection strip's real height. A bottom-pinned control inside a
     /// PUSHED destination does not receive the `safeAreaInset` the tab applied
@@ -333,8 +343,19 @@ public struct ChatView: View {
     /// control here that can change it (`UX.md` §3.3.1).
     private var composer: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
+            // **Above the field, and derived from the field's own text.** Every
+            // tile here is a path `UploadPath` found in `draft`; delete the path
+            // and the tile goes, with nothing to keep in step.
+            if let uploads {
+                AttachmentStrip(uploads: uploads, text: $draft)
+            }
             HStack(alignment: .bottom, spacing: Space.sm) {
-                TextField("reply to this agent", text: $draft, axis: .vertical)
+                if let uploads {
+                    AttachButton(uploads: uploads, isDemo: fleet.isDemo,
+                                 text: $draft, selection: $caret)
+                }
+                TextField("reply to this agent", text: $draft, selection: $caret,
+                          axis: .vertical)
                     .font(OrcFont.body)
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1...5)

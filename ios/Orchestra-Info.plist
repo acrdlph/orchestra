@@ -143,6 +143,25 @@
 	<key>NSCameraUsageDescription</key>
 	<string>orchestra scans the pairing code shown on your Mac.</string>
 	<!--
+	  Attaching a screenshot to a message. The composer uploads the image to
+	  the Mac running the orchestra server and puts the file's path into the
+	  text, which is how an agent reads a picture.
+
+	  **The wording still covers the camera key above, unchanged**, and that is
+	  deliberate: the picker here is `PhotosPicker` and `.fileImporter` only,
+	  with no camera source, so `NSCameraUsageDescription` remains true as
+	  written — scanning the pairing QR is still the only thing this app points a
+	  camera at. A "take a photo" source would need that sentence widened; it was
+	  left out because a simulator has no camera, so nothing about it could be
+	  verified the way the rest of this app is, and the photo library plus Files
+	  already reach every picture on the phone.
+
+	  Note there is no `NSPhotoLibraryAddUsageDescription`: this app only ever
+	  READS a picture the user picked. It writes nothing back to the library.
+	-->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>orchestra sends an image you pick to your Mac, so you can show an agent a screenshot.</string>
+	<!--
 	  Required or the FIRST `.deviceOwnerAuthentication` evaluation crashes the
 	  app on a Face ID device. It gates the paired board behind Face ID / Touch
 	  ID / passcode (see `App/BiometricGate.swift`). Passcode fallback needs no
