@@ -160,6 +160,33 @@ them.
 
 ---
 
+## Where to work — and the compatibility trap that comes with it
+
+A worktree and branch are already prepared for you:
+
+```
+/Users/achill/Downloads/orchestr-collector      branch: collector-split
+```
+
+**Work there, not in `/Users/achill/Downloads/orchestr`.** That checkout is the owner's working
+copy, has a live server running against it, and may have other work in flight. Your own directory
+means your builds, your `ios/.build`, and your test runs collide with nothing.
+
+Two consequences to hold on to:
+
+1. **Phase 0 is a breaking wire change**, so for as long as this branch is unmerged there are two
+   incompatible wire formats in existence. The owner's iPhone runs an app built from `main`. If
+   they point that phone at a server running *your* branch, the board will be wrong or empty — and
+   the reverse is equally true. So: **run your servers on a spare port**, never replace the
+   `--tailnet` instance the owner is using, and if you build the app from this branch, say clearly
+   in your report that it only talks to this branch's server.
+2. **CI does not run on this branch.** Both workflows trigger on pushes to `main` and on pull
+   requests to `main`. Pushing `collector-split` runs nothing. Open a PR when a phase is done if
+   you want CI to see it — and note the Python suite runs on **Linux** there while you are on
+   macOS, which has already caught two platform-dependent tests in this repo.
+
+Merge to `main` is a deliberate, reviewed step at a phase gate — not something to do as you go.
+
 ## Running it
 
 There is a live server on `127.0.0.1:4242`, bound to the tailnet, started with
