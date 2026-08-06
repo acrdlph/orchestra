@@ -119,6 +119,9 @@ public final class ChatStore {
 
     public let account: String
     public let sid: String
+    /// The qualified card key `<node>/<worktree>` (ADR 0016) — it rides every
+    /// `/api/send` body as the server's second assertion, so it must name the
+    /// card the way the server does.
     public let worktree: String
 
     private let client: OrchestraClient

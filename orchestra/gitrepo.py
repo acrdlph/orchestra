@@ -25,7 +25,7 @@ import re
 import time
 from pathlib import Path
 
-from . import config, shell
+from . import config, node, shell
 
 
 # ---------------------------------------------------------------- worktrees
@@ -187,7 +187,12 @@ def branch_topology():
     for w in discover_worktrees():
         g = w["git"]
         rc, origin = shell.run(["git", "remote", "get-url", "origin"], cwd=g)
-        key = origin if rc == 0 and origin else "local:" + w["path"]
+        # The origin URL genuinely spans nodes — two machines' clones of one
+        # repo SHOULD share a trunk group on a merged map. The no-origin
+        # fallback is a local path, which does not: qualify it with the node
+        # so two machines' path-twins can never merge by accident (ADR 0016).
+        key = origin if rc == 0 and origin else \
+            f"local:{node.node_id()}:{w['path']}"
         base = _base_ref(g)
         if not base:
             continue
@@ -224,7 +229,11 @@ def branch_topology():
             # origin/<main> wins as this repo's trunk tip
             grp["trunk_ts"], grp["_root"] = base_ts, g
         grp["branches"].append({
-            "worktree": w["name"], "branch": br or "?",
+            # `worktree` + `node` carry the identity; clients derive the card
+            # key `<node>/<worktree>` with the same one rule cards use, which
+            # is what keeps the map's join to /api/state unambiguous when two
+            # machines hold same-named worktrees (NODES.md §3).
+            "worktree": w["name"], "node": node.node_id(), "branch": br or "?",
             "fork_ts": min(fork_ts, tip_ts), "tip_ts": tip_ts,
             "ahead": int(ah or 0), "behind": int(bh or 0),
             "dirty": len([l for l in dirty.splitlines() if l.strip()]),
@@ -246,7 +255,10 @@ def demo_topology():
         return [int(t0 + (t1 - t0) * i / max(1, n - 1)) for i in range(n)]
 
     def br(wt, branch, fork_h, tip_h, ahead, behind, dirty, subj):
-        return {"worktree": wt, "branch": branch, "fork_ts": int(now - fork_h * H),
+        # "starbase", matching demo_state's node — the demo map must join the
+        # demo board by the same derived key the real pair uses
+        return {"worktree": wt, "node": "starbase", "branch": branch,
+                "fork_ts": int(now - fork_h * H),
                 "tip_ts": int(now - tip_h * H), "ahead": ahead, "behind": behind,
                 "dirty": dirty, "hash": "a1b2c3d", "subject": subj,
                 "commits": spread(now - fork_h * H + 600, now - tip_h * H, min(ahead, 20))}

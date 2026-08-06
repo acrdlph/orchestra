@@ -659,8 +659,16 @@ class TestTheObserverSide(unittest.TestCase):
     def setUp(self):
         self._cache = dict(fb._cache)
         self._watch = fb.CFG.get("watch")
+        # Pin the node id: the sweep composes the BOARD now (ADR 0016), and
+        # `_live_pids` arms exit-watches only for the LOCAL node's pids — an
+        # unpinned id would read the repo's own node.json into the fixtures.
+        self._node = fb.CFG.get("node")
+        fb.CFG["node"] = "n1"
+        fb.node._reset()
 
     def tearDown(self):
+        fb.CFG["node"] = self._node
+        fb.node._reset()
         fb.CFG["watch"] = self._watch
         fb._cache.update(self._cache)
 
@@ -737,7 +745,7 @@ class TestTheObserverSide(unittest.TestCase):
         why the pid list comes from the snapshot and not from the watcher."""
         o = self._observer()
         state = {"generated_at": 1000.0, "counts": {}, "worktrees": [
-            {"name": "a", "sessions": [],
+            {"name": "a", "availability": "busy", "sessions": [],
              "live_procs": [{"pid": 11, "cpu": 0.0, "etime": "1"},
                             {"pid": 12, "cpu": 0.0, "etime": "1"}]}],
             "other_procs": [{"pid": 13, "cpu": 0.0, "etime": "1"}]}
@@ -753,7 +761,7 @@ class TestTheObserverSide(unittest.TestCase):
         o = self._observer()
         self.assertEqual(o._live_pids(), ())       # before the first sweep
         o.publish({"generated_at": 1.0, "counts": {}, "other_procs": [],
-                   "worktrees": [{"name": "a", "sessions": [],
+                   "worktrees": [{"name": "a", "node": "n1", "sessions": [],
                                   "live_procs": [{"pid": 5, "cpu": 0.0,
                                                   "etime": "1"}]}]})
         self.assertEqual(o._live_pids(), (5,))

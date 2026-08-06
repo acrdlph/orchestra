@@ -16,8 +16,8 @@ reachable from the tailnet (API.md §2.5 puts every device route behind
 import sys
 import threading
 
-from orchestra import (auth, config, disk, notify, observer, resume, server,
-                       tailnet)
+from orchestra import (auth, collector, config, disk, node, notify, observer,
+                       resume, server, tailnet)
 
 
 def _devices(args):
@@ -136,6 +136,17 @@ def main():
     config.DEMO = args.demo
     if _devices(args) or _maintenance(args):
         return
+    # Resolve the node id NOW — the same shape as the bad-`pattern` refusal in
+    # load_config, and for the same reason: a config key "node" that cannot key
+    # cards would otherwise surface as a wrongly-merged board at 3am rather
+    # than a sentence at boot. This is also what mints and persists node.json
+    # on first run, so the id exists before anything composes a card.
+    try:
+        node.node_id()
+    except ValueError as e:
+        sys.exit(f"orchestra: {e}")
+    if args.collect_to:
+        return _run_collector(args.collect_to)
     if args.tailnet:
         _resolve_host()
     # A REFUSAL, not the warning that used to stand here (ADR 0013: "silent
@@ -200,6 +211,42 @@ def main():
         if companion:
             companion.shutdown()
             companion.server_close()
+
+
+def _run_collector(board_url):
+    """Collector mode (ADR 0016 Phase 1, NODES.md §11): watch this machine,
+    POST what it sees, listen for NOTHING.
+
+    What starts: the Observer sweep with its watcher — exactly the loop the
+    board mode runs — and the dial-out loop on this thread. What deliberately
+    does not: the HTTP server (no port, the whole point), the push pipeline
+    (the BOARD owns notifications; a collector pushing its own would notify
+    twice), the resume daemon (resuming is actuation, and Phase 1 is
+    read-only), and the disk thread (a report nobody is serving).
+
+    The token check is up front and fatal because the failure it prevents
+    surfaces in the wrong room otherwise: a tokenless collector would run
+    forever, POSTing 401s into a board that looks simply empty from the
+    phone, with the only evidence on a machine nobody is looking at.
+    """
+    if config.DEMO:
+        sys.exit("orchestra: --collect-to and --demo do not compose — demo "
+                 "is a board with fictional data, a collector ships real data")
+    if not (config.CFG.get("collect_token") or "").strip():
+        sys.exit("orchestra: --collect-to needs \"collect_token\" in the "
+                 "config file — mint one on the BOARD machine with "
+                 "`python3 -m orchestra --add-device 'collector <name>'` and "
+                 "paste it there (config, not argv: `ps` prints argv)")
+    observer.start_observer()
+    # flush: this line is the whole boot diagnostic, and a collector's stdout
+    # is usually a redirected file whose block buffer would sit on it for hours
+    print(f"orchestra collector up → posting to {board_url} "
+          f"as node '{node.node_id()}' ({node.label()}) — listening on nothing",
+          flush=True)
+    try:
+        collector.run_collector(board_url, observer._observer)
+    except KeyboardInterrupt:
+        pass
 
 
 def _also_loopback(host, port):

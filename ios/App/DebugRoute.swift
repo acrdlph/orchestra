@@ -17,9 +17,13 @@ import Foundation
 /// ```
 /// SIMCTL_CHILD_ORC_SCREEN=limits              xcrun simctl launch booted sh.orchestra.app
 /// SIMCTL_CHILD_ORC_SCREEN=server              …
-/// SIMCTL_CHILD_ORC_SCREEN=wt:ConfidAI2        …
-/// SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAI2/account2/ca1c96e9-…  …
+/// SIMCTL_CHILD_ORC_SCREEN=wt:starbase/ConfidAI2        …
+/// SIMCTL_CHILD_ORC_SCREEN=chat:starbase/ConfidAI2/account2/ca1c96e9-…  …
 /// ```
+///
+/// The worktree position carries the card KEY `<node>/<worktree>` (ADR 0016) —
+/// the same value `FleetRoute.worktree` holds — and the `chat:`/`resume:`
+/// grammars parse it from the RIGHT (NODES.md §7), since the key contains `/`.
 ///
 /// It is `#if DEBUG`, it reads an environment variable a Release build cannot
 /// see, and it pushes exactly the destinations a tap pushes — the same
@@ -29,8 +33,9 @@ enum DebugRoute: Equatable {
     case fleet
     /// The demo fleet's board. `ORC_SCREEN=demo` — and, because a screenshot run
     /// needs the demo's *other* screens too, `demo:` is also a PREFIX:
-    /// `demo:wt:search-index`, `demo:chat:…`, `demo:limits`, `demo:map` each
-    /// enter the demo and then land exactly where the bare route would.
+    /// `demo:wt:starbase/search-index`, `demo:chat:…`, `demo:limits`, `demo:map`
+    /// each enter the demo and then land exactly where the bare route would
+    /// (the demo's node id is `starbase`, so its keys are `starbase/<name>`).
     /// `demoRequested` reads the prefix; `parse` strips it, so every route below
     /// keeps one spelling.
     case demo
@@ -111,23 +116,30 @@ enum DebugRoute: Equatable {
             return .finish(parts[1])
         case "resume":
             guard parts.count == 2 else { return nil }
-            let fields = parts[1].split(separator: "/", maxSplits: 1).map(String.init)
-            guard fields.count == 2 else { return nil }
-            return .resume(worktree: fields[0], sid: fields[1])
+            // FROM THE RIGHT (NODES.md §7): the worktree position holds the
+            // qualified card key `<node>/<worktree>`, which has a `/` of its
+            // own — a left split would hand the node to the worktree and the
+            // worktree to the sid. A sid cannot contain `/`, so the last
+            // segment is the sid and everything before it is the key.
+            guard let fields = CardKey.worktreeSid(parts[1]) else { return nil }
+            return .resume(worktree: fields.worktree, sid: fields.sid)
         case "wt", "worktree":
             guard parts.count == 2, !parts[1].isEmpty else { return nil }
             return .worktree(parts[1])
         case "chat", "transcript":
             guard parts.count == 2 else { return nil }
-            // `worktree/account/sid` — the sid is a UUID with dashes and the
-            // account can be anything, so the split is bounded rather than
-            // greedy and the sid keeps whatever is left.
-            let fields = parts[1].split(separator: "/", maxSplits: 2).map(String.init)
-            guard fields.count == 3 else { return nil }
+            // `worktree/account/sid`, re-parsed FROM THE RIGHT: the worktree is
+            // a qualified card key since ADR 0016 and can hold a `/`; account
+            // labels and sids cannot. So the last two segments are account and
+            // sid, and everything before them joins back into the key —
+            // `CardKey.worktreeAccountSid`, pinned by the package's tests.
+            guard let fields = CardKey.worktreeAccountSid(parts[1]) else { return nil }
             if parts[0].lowercased() == "transcript" {
-                return .transcript(worktree: fields[0], account: fields[1], sid: fields[2])
+                return .transcript(worktree: fields.worktree, account: fields.account,
+                                   sid: fields.sid)
             }
-            return .chat(worktree: fields[0], account: fields[1], sid: fields[2])
+            return .chat(worktree: fields.worktree, account: fields.account,
+                         sid: fields.sid)
         default:
             return nil
         }

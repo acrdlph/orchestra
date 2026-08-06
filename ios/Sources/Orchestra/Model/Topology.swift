@@ -15,7 +15,10 @@ import Foundation
 //   * a branch carries `worktree` (the name, not a `worktree_id`), `branch`,
 //     `fork_ts`/`tip_ts` (the `_ts` spelling, not `_at`), `ahead`, `behind`,
 //     `dirty`, `hash`, `subject` (UNTRUNCATED — `subject_short` is never
-//     written), and `commits` (epoch seconds, newest first, capped 40)
+//     written), and `commits` (epoch seconds, newest first, capped 40) —
+//     and, since ADR 0016, `node`: the map joins the board by the derived
+//     branch key `<node>/<worktree>`, because same-repo worktrees from two
+//     machines share a trunk group by origin URL
 //   * there is NO `dropped[]`, NO per-branch `base_ts`, NO `axis`, NO `role`
 //
 // The consequences for this build, each honest rather than papered over:
@@ -58,10 +61,11 @@ public struct Topology: Sendable, Equatable, Decodable {
 
     public var generated: Date { Date(timeIntervalSince1970: generatedAt) }
 
-    /// Every worktree the topology could place, across all groups. The set the
-    /// board's worktree list is differenced against to find what was dropped.
+    /// Every card KEY the topology could place, across all groups — the join to
+    /// the board is by `<node>/<worktree>` since ADR 0016. The set the board's
+    /// key list is differenced against to find what was dropped.
     public var mappedWorktrees: Set<String> {
-        Set(groups.flatMap { $0.branches.map(\.worktree) })
+        Set(groups.flatMap { $0.branches.map(\.key) })
     }
 }
 
@@ -110,10 +114,22 @@ public struct TopoGroup: Sendable, Equatable, Decodable, Identifiable {
 /// Where one worktree's branch really sits: its merge-base fork, its tip, and the
 /// drift either side of the trunk.
 public struct TopoBranch: Sendable, Equatable, Decodable, Identifiable {
-    /// The worktree name — the join key into the board, exactly as `discover_worktrees`
-    /// produced it for both payloads.
-    public var id: String { worktree }
+    /// The derived branch key — the join into the board since ADR 0016. Two
+    /// machines's same-repo worktrees share a trunk group by origin URL (that
+    /// is a feature), so the BRANCH carries `node` rather than the group, and
+    /// the identity is the pair.
+    public var id: String { key }
+
+    /// `<node>/<worktree>`, by the one shared rule (`CardKey.make`, bare
+    /// fallback when `node` is empty) — joins `Worktree.key` exactly.
+    public var key: String { CardKey.make(node: node, name: worktree) }
+
+    /// The worktree NAME — display, exactly as `discover_worktrees` produced it
+    /// for both payloads. The join moved to `key`.
     public let worktree: String
+    /// Which node's checkout this is (`gitrepo.branch_topology` stamps it since
+    /// the split). Empty only against a pre-split server.
+    public let node: String
     /// `"?"` for a detached HEAD (`git branch --show-current` empty).
     public let branch: String
     /// The merge-base timestamp. The server already clamps `min(fork_ts, tip_ts)`
@@ -132,8 +148,9 @@ public struct TopoBranch: Sendable, Equatable, Decodable, Identifiable {
 
     public init(worktree: String, branch: String, forkTs: Double, tipTs: Double,
                 ahead: Int, behind: Int, dirty: Int, hash: String,
-                subject: String, commits: [Double]) {
+                subject: String, commits: [Double], node: String = "") {
         self.worktree = worktree
+        self.node = node
         self.branch = branch
         self.forkTs = forkTs
         self.tipTs = tipTs
@@ -146,7 +163,7 @@ public struct TopoBranch: Sendable, Equatable, Decodable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case worktree, branch, ahead, behind, dirty, hash, subject, commits
+        case worktree, node, branch, ahead, behind, dirty, hash, subject, commits
         case forkTs = "fork_ts"
         case tipTs = "tip_ts"
     }
@@ -154,6 +171,7 @@ public struct TopoBranch: Sendable, Equatable, Decodable, Identifiable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? "?"
+        node = try c.decodeIfPresent(String.self, forKey: .node) ?? ""
         branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? "?"
         forkTs = try c.decodeIfPresent(Double.self, forKey: .forkTs) ?? 0
         tipTs = try c.decodeIfPresent(Double.self, forKey: .tipTs) ?? 0

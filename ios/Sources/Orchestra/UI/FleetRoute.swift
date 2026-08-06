@@ -7,6 +7,8 @@ import Foundation
 /// on a simulator that has no camera and cannot be typed into. See
 /// `DebugRoute`.
 public enum FleetRoute: Hashable, Sendable {
+    /// The card KEY `<node>/<worktree>` (ADR 0016) — the identity every screen
+    /// looks a card up by (`Worktree.id`), never the bare display name.
     case worktree(String)
     /// The branch map (`UX.md` §5). Pushed from the board's toolbar rather than
     /// spending one of the three permanent tabs on it — the map answers "which
@@ -16,7 +18,7 @@ public enum FleetRoute: Hashable, Sendable {
     /// Addressed by `(account, sid)` and NOT by anything positional, for the
     /// same reason every mutation is (ADR 0008): the board re-sorts under you,
     /// so "the second session on ConfidAI2" names a different agent a second
-    /// later.
+    /// later. `worktree` is the card key.
     case chat(worktree: String, account: String, sid: String)
 }
 

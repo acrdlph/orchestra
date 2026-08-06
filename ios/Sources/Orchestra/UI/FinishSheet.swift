@@ -19,6 +19,8 @@ import SwiftUI
 /// heights and different buttons**, so a tap in step two can never be muscle
 /// memory from step one.
 public struct FinishSheet: View {
+    /// The card KEY `<node>/<worktree>` — what the wire, the in-flight lock and
+    /// `finishes` all key on (ADR 0016). Display uses the card's bare name.
     private let worktree: String
     @Bindable private var fleet: FleetStore
     @Bindable private var actions: ActionsStore
@@ -42,7 +44,7 @@ public struct FinishSheet: View {
     }
 
     private var card: Worktree? {
-        fleet.state?.worktrees.first { $0.name == worktree }
+        fleet.state?.worktrees.first { $0.id == worktree }
     }
 
     /// Which step this is, read off the card on **every** pass rather than
@@ -90,7 +92,7 @@ public struct FinishSheet: View {
         state(card)
 
         if actions.serverForgotBrief(card: card, now: now),
-           let sent = actions.rememberedBrief(for: card.name, now: now) {
+           let sent = actions.rememberedBrief(for: card.key, now: now) {
             // The server-restart hazard, and the only defence a client has.
             // `finish._closeouts` is in-memory: a restart drops it, the card
             // stops saying `closeout_sent`, and this button silently reverts
@@ -125,7 +127,7 @@ public struct FinishSheet: View {
         PrimaryAction("Send the closeout brief", symbol: "paperplane",
                       tint: Palette.statusLimit, enabled: !fired && !fleet.isDemo) {
             fired = true
-            actions.finish(worktree: card.name, step: .brief)
+            actions.finish(worktree: card.key, step: .brief)
         }
         ConsequenceGap()
         CancelAction { dismiss() }
@@ -159,7 +161,7 @@ public struct FinishSheet: View {
         PrimaryAction("Verify and close", symbol: "xmark",
                       tint: Palette.statusNeeds, enabled: !fired && !fleet.isDemo) {
             fired = true
-            actions.finish(worktree: card.name, step: .close)
+            actions.finish(worktree: card.key, step: .close)
         }
         if let session = card.sessions.first(where: { card.isReachable($0) }) {
             SecondaryAction("Chat with the agent", symbol: "text.bubble",
@@ -204,8 +206,8 @@ public struct FinishSheet: View {
 
     @ViewBuilder
     private func outcome(_ run: ActionsStore.FinishRun) -> some View {
-        SheetHeader(run.step == .brief ? "Closing out \(run.worktree)"
-                                       : "Closing \(run.worktree)",
+        SheetHeader(run.step == .brief ? "Closing out \(CardKey.bareName(run.worktree))"
+                                       : "Closing \(CardKey.bareName(run.worktree))",
                     symbol: "checkmark.seal", hue: Palette.statusLimit)
         switch run.phase {
         case .running:

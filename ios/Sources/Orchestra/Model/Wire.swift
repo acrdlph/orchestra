@@ -8,6 +8,15 @@ import Foundation
 // below is a fact about that capture or about the code that writes it, and the
 // ones that differ from the document are listed in `ios/README.md`.
 //
+// Re-shaped 2026-08-06 for ADR 0016 (the collector split): a card's identity is
+// the qualified key `<node>/<worktree>` — two machines can each hold a
+// `ConfidAI2`, so the bare name stopped being one. Cards carry `node`, the
+// payload carries a `nodes` map and the board host's own `node` id, and every
+// single string that names a card on the wire (`free_worktrees`, `order`, frame
+// `cards` keys, `resumes` keys, the `worktree` parameter of every acting route)
+// is that key. `observer.merge_nodes` is the authority; `docs/mobile/NODES.md`
+// is the design.
+//
 // Two rules hold everywhere in this file:
 //
 //   1. **A field the server omits is `Optional` in Swift, not defaulted at the
@@ -24,23 +33,41 @@ import Foundation
 ///
 /// Note what is NOT here and rides only on `GET /api/events`: `v` (the version),
 /// `order` (the board's triage order) and `freshness`. And what rides only here:
-/// `hostname`, `user`, `free_worktrees`, `resumes`. The two payloads are
-/// deliberately different shapes — `observer.delta_since`'s docstring is the
-/// authority and it says why for each field.
+/// `hostname`, `user`, `free_worktrees`, `resumes`, and `node` (the board host's
+/// own node id). The two payloads are deliberately different shapes —
+/// `observer.delta_since`'s docstring is the authority and it says why for each
+/// field. `nodes` rides on BOTH: it is the fourth bump term (ADR 0016), so it
+/// must reach a streaming client on every frame and a seeded one here.
 public struct FleetState: Sendable, Equatable, Decodable {
     public let generatedAt: Double
+    /// The BOARD HOST — constant for the life of the server process, exactly as
+    /// before the split. Per-node identity lives in `nodes`.
     public let hostname: String
     public let user: String
     public let counts: Counts
+    /// Qualified keys, in board order — `observer.merge_nodes` derives them as
+    /// `node.card_key(c)`, so a bare name here would dispatch to whichever node
+    /// won the collision.
     public let freeWorktrees: [String]
     public let worktrees: [Worktree]
     public let otherProcs: [OtherProc]
-    /// Keyed `"{worktree}|{sid}"` with a literal pipe (`resume.py:68`).
+    /// Keyed `"<node>/<worktree>|{sid}"` with a literal pipe — `resume_public`
+    /// qualifies both the dict key and each record's `worktree` at the server's
+    /// door (`resume.py`), while the node-local file stays bare.
     public let resumes: [String: ResumeSchedule]
+    /// Every node this payload references, described: `{id: {label, hostname,
+    /// user}}`. The invariant (NODES.md §6) is that a card's `node` always
+    /// appears here — a card whose node the client cannot name is a board
+    /// nobody can act on.
+    public let nodes: [String: NodeInfo]
+    /// The board host's OWN node id — wire key `node`. The client's only honest
+    /// way to tell local from remote (a pid is a node-local hint, ADR 0016).
+    public let boardNode: String
 
     public init(generatedAt: Double, hostname: String, user: String, counts: Counts,
                 freeWorktrees: [String], worktrees: [Worktree],
-                otherProcs: [OtherProc], resumes: [String: ResumeSchedule]) {
+                otherProcs: [OtherProc], resumes: [String: ResumeSchedule],
+                nodes: [String: NodeInfo] = [:], boardNode: String = "") {
         self.generatedAt = generatedAt
         self.hostname = hostname
         self.user = user
@@ -49,6 +76,8 @@ public struct FleetState: Sendable, Equatable, Decodable {
         self.worktrees = worktrees
         self.otherProcs = otherProcs
         self.resumes = resumes
+        self.nodes = nodes
+        self.boardNode = boardNode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,7 +86,8 @@ public struct FleetState: Sendable, Equatable, Decodable {
         case freeWorktrees = "free_worktrees"
         case worktrees
         case otherProcs = "other_procs"
-        case resumes
+        case resumes, nodes
+        case boardNode = "node"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -70,9 +100,95 @@ public struct FleetState: Sendable, Equatable, Decodable {
         worktrees = try c.decode([Worktree].self, forKey: .worktrees)
         otherProcs = try c.decodeIfPresent([OtherProc].self, forKey: .otherProcs) ?? []
         resumes = try c.decodeIfPresent([String: ResumeSchedule].self, forKey: .resumes) ?? [:]
+        nodes = try c.decodeIfPresent([String: NodeInfo].self, forKey: .nodes) ?? [:]
+        boardNode = try c.decodeIfPresent(String.self, forKey: .boardNode) ?? ""
     }
 
     public var generated: Date { Date(timeIntervalSince1970: generatedAt) }
+
+    /// The display rule's whole switch (NODES.md §7): the node badge appears
+    /// only when more than one node is on the board, so a single-machine board
+    /// renders exactly as it did before the split.
+    public var multiNode: Bool { nodes.count > 1 }
+}
+
+/// One node's description, from the payload's `nodes` map. The label is the
+/// hostname's short form read live at compose time — hostnames change and are
+/// not unique, so the label rides for display and the id keys (NODES.md §1).
+public struct NodeInfo: Sendable, Equatable, Decodable {
+    public let label: String
+    public let hostname: String
+    public let user: String
+
+    public init(label: String, hostname: String, user: String) {
+        self.label = label
+        self.hostname = hostname
+        self.user = user
+    }
+
+    enum CodingKeys: String, CodingKey { case label, hostname, user }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        hostname = try c.decodeIfPresent(String.self, forKey: .hostname) ?? ""
+        user = try c.decodeIfPresent(String.self, forKey: .user) ?? ""
+    }
+}
+
+/// The card key's grammar, in ONE place (NODES.md §2: every client derives the
+/// key with one shared helper). `<node>/<worktree>` — a worktree name is a
+/// directory basename and cannot contain `/`, a node id's format forbids it
+/// too, so the key splits unambiguously on the FIRST `/` in one direction and
+/// re-joins losslessly in the other.
+public enum CardKey {
+    /// The one derivation rule. An empty node is the pre-split wire and the
+    /// name IS the key — the same no-node fallback `stream.js`'s `cardKey`
+    /// keeps, so this model stays loadable against an old server.
+    public static func make(node: String, name: String) -> String {
+        node.isEmpty ? name : "\(node)/\(name)"
+    }
+
+    /// The bare worktree name, for DISPLAY only — identity never parses the key
+    /// back apart. Splits on the first `/`; a key with none is a bare name.
+    public static func bareName(_ key: String) -> String {
+        guard let slash = key.firstIndex(of: "/") else { return key }
+        return String(key[key.index(after: slash)...])
+    }
+
+    /// The node half, for DISPLAY only (the node badge). Empty for a bare key.
+    public static func node(_ key: String) -> String {
+        guard let slash = key.firstIndex(of: "/") else { return "" }
+        return String(key[key.startIndex..<slash])
+    }
+
+    /// The debug deep-link grammar `chat:<wt>/<account>/<sid>`, re-parsed FROM
+    /// THE RIGHT (NODES.md §7): a qualified key holds a `/` of its own, so a
+    /// left split hands half the key to the account. Account labels and sids
+    /// cannot contain `/`, so the last two segments are account and sid and
+    /// everything before them joins back into the worktree key.
+    public static func worktreeAccountSid(_ raw: String)
+        -> (worktree: String, account: String, sid: String)? {
+        var parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count >= 3 else { return nil }
+        let sid = String(parts.removeLast())
+        let account = String(parts.removeLast())
+        let worktree = parts.joined(separator: "/")
+        guard !worktree.isEmpty, !account.isEmpty, !sid.isEmpty else { return nil }
+        return (worktree, account, sid)
+    }
+
+    /// Same rule for `resume:<wt>/<sid>` — the sid is the last segment, the
+    /// worktree key is everything before it.
+    public static func worktreeSid(_ raw: String)
+        -> (worktree: String, sid: String)? {
+        var parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return nil }
+        let sid = String(parts.removeLast())
+        let worktree = parts.joined(separator: "/")
+        guard !worktree.isEmpty, !sid.isEmpty else { return nil }
+        return (worktree, sid)
+    }
 }
 
 /// Session-level tallies. `observer.py:245` — six keys, always all six.
@@ -105,13 +221,26 @@ public struct Counts: Sendable, Equatable, Codable, Hashable {
 }
 
 public struct Worktree: Sendable, Equatable, Decodable, Identifiable {
-    public var id: String { name }
+    /// The card KEY — the identity everything addresses this card by since
+    /// ADR 0016. The bare name is display.
+    public var id: String { key }
 
-    /// The card key. `discover_worktrees` dedupes by absolute path, so two roots
-    /// each holding a `ConfidAI` produce two cards with the SAME name — which a
-    /// name-keyed dictionary silently drops. Every dictionary built from these
-    /// uses `uniquingKeysWith:`, never `uniqueKeysWithValues`.
+    /// `<node>/<name>`, derived by the one shared rule (`CardKey.make`). An
+    /// empty `node` — a pre-split server — leaves the name as the key, exactly
+    /// as `stream.js`'s `cardKey` does.
+    public var key: String { CardKey.make(node: node, name: name) }
+
+    /// The bare worktree directory name — DISPLAY, no longer an identity: two
+    /// machines can each hold a `ConfidAI2` (ADR 0016). And within one node,
+    /// `discover_worktrees` dedupes by absolute path, so two roots each holding
+    /// a `ConfidAI` still produce two cards with the SAME key — the key's scope
+    /// grew from machine to fleet, its grain within a machine did not (NODES.md
+    /// §2). Every dictionary built from these uses `uniquingKeysWith:`, never
+    /// `uniqueKeysWithValues`.
     public let name: String
+    /// The node that composed this card — `observer.merge_nodes` stamps it on
+    /// every card it merges. Empty only against a pre-split server.
+    public let node: String
     public let path: String
     public let git: GitInfo
     /// Server-sorted by severity then freshness, capped at `max_sessions`
@@ -140,8 +269,9 @@ public struct Worktree: Sendable, Equatable, Decodable, Identifiable {
 
     public init(name: String, path: String, git: GitInfo, sessions: [Session],
                 liveProcs: [LiveProc], availability: Availability,
-                closeoutSent: Double? = nil) {
+                closeoutSent: Double? = nil, node: String = "") {
         self.name = name
+        self.node = node
         self.path = path
         self.git = git
         self.sessions = sessions
@@ -151,9 +281,23 @@ public struct Worktree: Sendable, Equatable, Decodable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, path, git, sessions, availability
+        case name, node, path, git, sessions, availability
         case liveProcs = "live_procs"
         case closeoutSent = "closeout_sent"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        // Lenient, not Optional: absent means a pre-split server, and the
+        // no-node fallback in `key` is what keeps this model loadable there.
+        node = try c.decodeIfPresent(String.self, forKey: .node) ?? ""
+        path = try c.decode(String.self, forKey: .path)
+        git = try c.decode(GitInfo.self, forKey: .git)
+        sessions = try c.decode([Session].self, forKey: .sessions)
+        liveProcs = try c.decode([LiveProc].self, forKey: .liveProcs)
+        availability = try c.decode(Availability.self, forKey: .availability)
+        closeoutSent = try c.decodeIfPresent(Double.self, forKey: .closeoutSent)
     }
 
     /// Terminals in this worktree that no session claimed a pid for.
@@ -509,14 +653,21 @@ public struct OtherProc: Sendable, Equatable, Decodable, Identifiable {
     public let tty: String?
     public let host: String?
     public let cwd: String?
+    /// Which node the process lives on — `merge_nodes` tags every entry
+    /// (ADR 0016). A pid is a hint only inside its own node, so anything that
+    /// acts on one (the desktop's ⌖ focus) must first check this against the
+    /// board's own node. Empty only against a pre-split server.
+    public let node: String
 
-    public init(pid: Int32, cpu: Double, etime: String, tty: String?, host: String?, cwd: String?) {
+    public init(pid: Int32, cpu: Double, etime: String, tty: String?, host: String?,
+                cwd: String?, node: String = "") {
         self.pid = pid
         self.cpu = cpu
         self.etime = etime
         self.tty = tty
         self.host = host
         self.cwd = cwd
+        self.node = node
     }
 
     public init(from decoder: any Decoder) throws {
@@ -527,15 +678,19 @@ public struct OtherProc: Sendable, Equatable, Decodable, Identifiable {
         tty = try c.decodeIfPresent(String.self, forKey: .tty)
         host = try c.decodeIfPresent(String.self, forKey: .host)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        node = try c.decodeIfPresent(String.self, forKey: .node) ?? ""
     }
 
-    enum CodingKeys: String, CodingKey { case pid, cpu, etime, tty, host, cwd }
+    enum CodingKeys: String, CodingKey { case pid, cpu, etime, tty, host, cwd, node }
 }
 
 /// One armed auto-resume. Rides along on `/api/state` only — `resume.py` is not
 /// watched by the observer, so arming one moves no version and it could never
 /// ride the event stream however that frame were shaped.
 public struct ResumeSchedule: Sendable, Equatable, Decodable {
+    /// The qualified card key `<node>/<worktree>` — `resume_public` stamps it at
+    /// the server's door, while the node-local schedule file stays bare
+    /// (NODES.md §4). Joins against `Worktree.key`, never `name`.
     public let worktree: String
     public let sid: String
     public let account: String

@@ -45,8 +45,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (config, auth, gitrepo, limits, observer, terminal, chat,
-               dispatch, resume, finish, pairing, tailnet, notify, idem,
+from . import (config, auth, gitrepo, limits, node, nodes, observer, terminal,
+               chat, dispatch, resume, finish, pairing, tailnet, notify, idem,
                sessionlog, uploads)
 
 MAX_SUBSCRIBERS = 32        # concurrent SSE streams; config key "sse_max_subscribers"
@@ -404,18 +404,28 @@ class Handler(BaseHTTPRequestHandler):
                                    "api": "1.0", "time": time.time()}).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/state"):
-                # schedules ride along so the board needs no second fetch
+                # schedules ride along so the board needs no second fetch;
+                # freshness rides so a POLLING client can date each node's
+                # cards — the stream always carried it, and node-down honesty
+                # (NODES.md §11) must not require a stream
                 body = json.dumps({**observer.cached_state(),
-                                   "resumes": resume.resume_public()}).encode()
+                                   "resumes": resume.resume_public(),
+                                   "freshness": observer.freshness()}).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/focus"):
                 q = _query(self.path)
                 m = re.search(r"pid=(\d+)", self.path)
+                # THE DOOR (NODES.md §4): the wire speaks the qualified card
+                # key; actuation below this line speaks the node-local bare
+                # name. A bare value reads as "the local node" — it can never
+                # address a remote machine — and a foreign node is a refusal
+                # naming the node, in the board's usual error envelope.
+                wt, bad = node.local_name(q.get("wt"))
                 # the pid is a hint; wt/sid/cwd/tmux/tty are the address (ADR 0008)
-                result = terminal.focus_process(
+                result = bad or terminal.focus_process(
                     int(m.group(1)) if m else None,
                     sid=q.get("sid"), account=q.get("account"),
-                    worktree=q.get("wt"), cwd=q.get("cwd"),
+                    worktree=wt, cwd=q.get("cwd"),
                     tmux=q.get("tmux"), tty=q.get("tty"))
                 body = json.dumps(result).encode()
                 ctype = "application/json"
@@ -781,7 +791,17 @@ class Handler(BaseHTTPRequestHandler):
         # (`uploads.max_body()`, ~13.3 MB at the default 10 MB knob), and the
         # two never fight: exactly one of them is consulted per request.
         route = self.path.split("?", 1)[0]
-        cap = uploads.max_body() if route == "/api/v1/uploads" else MAX_BODY
+        if route == "/api/v1/uploads":
+            cap = uploads.max_body()
+        elif route == "/api/v1/nodes/snapshot":
+            # A node snapshot is ~38 KB on a nine-worktree fleet; the global
+            # cap would silently strand a fifty-worktree machine, and raising
+            # the global for one route puts the whole surface behind it —
+            # the uploads rule, applied a second time (NODES.md §11).
+            cap = int(float(config.CFG.get("node_snapshot_max_mb", 1.0))
+                      * 1024 * 1024)
+        else:
+            cap = MAX_BODY
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -887,6 +907,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, uploads.receive(
                     payload, device=(dev or {}).get("id"),
                     peer=self.client_address[0] if self.client_address else ""))
+            if route == "/api/v1/nodes/snapshot":
+                # ADR 0016 Phase 1: a remote collector's node snapshot. The
+                # DOOR is where a bad identity is refused — an id that cannot
+                # key cards (422), or the board's own id (409: a remote
+                # claiming the local identity is the one collision the
+                # qualified key cannot survive). Latest-wins by nature, so no
+                # idempotency key; auth is `parse_request` like every route —
+                # the collector presents an ordinary device token. The nudge
+                # is what puts the deposit on the board within a hot sweep
+                # rather than up to idle_s later; `git=False` because a
+                # remote snapshot says nothing about THIS machine's repos.
+                refusal = nodes.deposit(
+                    payload.get("node"), payload.get("state"),
+                    label=payload.get("label"), seq=payload.get("seq"),
+                    sent_at=payload.get("sent_at"), received_at=time.time())
+                if refusal:
+                    st = 409 if refusal["error"] == "node_is_self" else 422
+                    return self._json(st, refusal)
+                observer.nudge(f"node:{payload.get('node')}", git=False)
+                return self._json(200, {"ok": True, "received_at": time.time()})
             if auth.admin("POST", route):
                 # `/api/v1/devices/<id>/revoke`. Parsed rather than matched so the
                 # path shape is API.md §2.5's, which is what the Swift client and
@@ -972,32 +1012,43 @@ class Handler(BaseHTTPRequestHandler):
                     notification_type=payload.get("notification_type"))}
             elif route == "/api/reserve":
                 result = limits.set_reserve(payload.get("account"), payload.get("percent"))
+            # THE DOOR, for every acting verb below (NODES.md §4): the wire
+            # names a card by its qualified key `<node>/<worktree>`; the local
+            # paths these routes call are node-local and speak bare names.
+            # `local_name` strips the local node's prefix, passes a bare value
+            # through as "the local node", and refuses a foreign node by name
+            # — in the board's own error envelope, so every client renders it.
             elif route == "/api/resume/schedule":
-                result = resume.schedule_resume(
-                    payload.get("worktree"), payload.get("sid"),
+                wt, bad = node.local_name(payload.get("worktree"))
+                result = bad or resume.schedule_resume(
+                    wt, payload.get("sid"),
                     payload.get("account"), model=payload.get("model"),
                     delay_s=payload.get("delay_s"),
                     resets_at=payload.get("resets_at"), due_at=payload.get("due_at"))
             elif route == "/api/resume/cancel":
-                result = resume.cancel_resume(payload.get("worktree"), payload.get("sid"))
+                wt, bad = node.local_name(payload.get("worktree"))
+                result = bad or resume.cancel_resume(wt, payload.get("sid"))
             elif route == "/api/send":
                 # {pid, text} was the whole request once, and that was the bug: the
                 # drawer captured a pid on open and posted it minutes later, so a
                 # recycled pid typed the reply into a different agent (ADR 0008).
                 # The identity the drawer already uses to READ the conversation now
                 # travels with the write, and the pid is only a hint.
-                result = terminal.send_to_process(
+                wt, bad = node.local_name(payload.get("worktree"))
+                result = bad or terminal.send_to_process(
                     int(payload.get("pid") or 0), payload.get("text") or "",
                     sid=payload.get("sid"), account=payload.get("account"),
-                    worktree=payload.get("worktree"), cwd=payload.get("cwd"),
+                    worktree=wt, cwd=payload.get("cwd"),
                     tmux=payload.get("tmux"), tty=payload.get("tty"))
             elif route == "/api/finish":
-                result = finish.start_finish(
-                    payload.get("worktree") or "",
+                wt, bad = node.local_name(payload.get("worktree") or "")
+                result = bad or finish.start_finish(
+                    wt or "",
                     clean_scratch=bool(payload.get("clean_scratch")))
             elif route == "/api/dispatch":
-                result = dispatch.start_dispatch(
-                    payload.get("mission"), payload.get("worktree") or None,
+                wt, bad = node.local_name(payload.get("worktree") or None)
+                result = bad or dispatch.start_dispatch(
+                    payload.get("mission"), wt or None,
                     payload.get("account") or None,
                     payload.get("model") or None, payload.get("effort") or None,
                     bool(payload.get("force_model")))

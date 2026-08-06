@@ -224,6 +224,8 @@ public struct DispatchResult: Sendable, Equatable, Decodable {
     public let message: String?
     /// The tmux session name, e.g. `mission-confidai7-214849`.
     public let session: String?
+    /// The qualified card key `<node>/<worktree>` since ADR 0016 — dispatch
+    /// results and log entries name cards the way everything else does.
     public let worktree: String?
     public let account: String?
     public let model: String?

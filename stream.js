@@ -39,12 +39,21 @@
 
   function Fleet() { this.reset(); }
 
+  // The card key: "<node>/<worktree>" (ADR 0016). Cards carry `node` and
+  // `name` as fields and every client derives the key with this one rule —
+  // a bare worktree name stopped being an identity the day two machines
+  // could each hold a `ConfidAI2`. The no-node fallback keeps this applier
+  // loadable against a pre-split server, where the name IS the key.
+  function cardKey(w) { return w.node ? w.node + "/" + w.name : w.name; }
+
   Fleet.prototype.reset = function () {
     this.v = null;        // null = holding nothing a delta may be applied to
     this.cards = {};
     this.order = [];
     this.counts = {};
     this.other = [];
+    this.nodes = {};      // node id -> {label, hostname, user}; every frame
+    this.freshness = {};  // probe ages + "node:<id>" stamps; never bumps
     this.at = null;
   };
 
@@ -78,18 +87,27 @@
         if (Object.prototype.hasOwnProperty.call(f.cards, s)) this.cards[s] = f.cards[s];
       }
     }
-    // `order`, not the key order of `cards`. Two reasons, both real: a delta
-    // names only what moved, so patching a dict leaves every unchanged card at
-    // its OLD position and a card that just flipped to NEEDS ANSWER would never
-    // sort to the top; and `JSON.parse` hoists integer-like keys ahead of the
-    // rest, so a worktree named `42` would sort itself to the front of the
-    // board. The fallback is for a frame with no `order` at all — a server
-    // older than this file — and is the best a dict can do.
+    // `order`, not the key order of `cards`. A delta names only what moved,
+    // so patching a dict leaves every unchanged card at its OLD position and
+    // a card that just flipped to NEEDS ANSWER would never sort to the top.
+    // (The other historical reason — `JSON.parse` hoists integer-like keys,
+    // so a worktree named `42` sorted itself to the front — retired with the
+    // qualified key: "<node>/42" is never integer-like. The rule stands on
+    // the first reason alone.) The fallback is for a frame with no `order`
+    // at all — a server older than this file — and is the best a dict can do.
     this.order = f.order || Object.keys(this.cards);
     this.counts = f.counts || {};
     // in full on every frame, because a loose claude process bumps the version
     // with no card changing (observer.delta_since says why)
     if (f.other_procs) this.other = f.other_procs;
+    // whole on every frame too — the fourth bump term (ADR 0016): a node can
+    // appear with zero cards, and a board must be able to name every node its
+    // cards reference (docs/mobile/NODES.md §6)
+    this.nodes = f.nodes || {};
+    // and the no-bump map that DATES each node's cards ("node:<id>" keys,
+    // NODES.md §11) — a dark node stays on the board with a stated age,
+    // which is only possible if the age actually reaches the page
+    this.freshness = f.freshness || {};
     this.at = f.at;
     this.v = f.v;
     return "applied";
@@ -103,11 +121,14 @@
     this.cards = {};
     this.order = [];
     for (var i = 0; i < wts.length; i++) {
-      this.cards[wts[i].name] = wts[i];
-      this.order.push(wts[i].name);
+      var k = cardKey(wts[i]);
+      this.cards[k] = wts[i];
+      this.order.push(k);
     }
     this.counts = d.counts || {};
     this.other = d.other_procs || [];
+    this.nodes = d.nodes || {};
+    this.freshness = d.freshness || {};
     this.at = d.generated_at;
     this.v = null;
   };
@@ -128,7 +149,9 @@
     }
     var free = [];
     for (var j = 0; j < wts.length; j++) {
-      if (wts[j].availability === "free") free.push(wts[j].name);
+      // qualified keys, matching the server's own free_worktrees — a bare
+      // name here would dispatch to whichever node won the collision
+      if (wts[j].availability === "free") free.push(cardKey(wts[j]));
     }
     return {
       generated_at: this.at,
@@ -137,14 +160,17 @@
       counts: this.counts,
       free_worktrees: free,
       worktrees: wts,
+      nodes: this.nodes,
+      freshness: this.freshness,
       other_procs: this.other,
       resumes: side.resumes || {},
     };
   };
 
   root.Fleet = Fleet;
+  root.cardKey = cardKey;
   if (typeof module === "object" && module && module.exports) {
-    module.exports = { Fleet: Fleet };
+    module.exports = { Fleet: Fleet, cardKey: cardKey };
 
   }
 

@@ -344,6 +344,16 @@ struct ActionTests {
         store.noteBriefSent("wt", at: now.addingTimeInterval(-60))
         #expect(store.serverForgotBrief(card: live, now: now))
 
+        // The memory is keyed by the CARD KEY (ADR 0016): another node's
+        // same-named worktree is a different card, and a brief this phone sent
+        // to one must never warn about the other.
+        let twin = Worktree(name: "wt", path: "/other/wt", git: git, sessions: [],
+                            liveProcs: [proc], availability: .busy,
+                            closeoutSent: nil, node: "work")
+        #expect(store.serverForgotBrief(card: twin, now: now) == false)
+        store.noteBriefSent(twin.key, at: now.addingTimeInterval(-60))
+        #expect(store.serverForgotBrief(card: twin, now: now))
+
         // The server still reports it: no restart, no warning.
         let stillPending = Worktree(name: "wt", path: "/x", git: git, sessions: [],
                                     liveProcs: [proc], availability: .busy,

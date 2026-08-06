@@ -325,7 +325,9 @@ struct FleetApplierTests {
             raw["v"] = snap.v + 1
         }
         _ = applier.apply(delta)
-        #expect(applier.composed(side: FleetSide())?.worktrees.map(\.name) == flipped)
+        // `order` speaks qualified card KEYS (ADR 0016), so the composed board
+        // is compared by `id`, never by the display name.
+        #expect(applier.composed(side: FleetSide())?.worktrees.map(\.id) == flipped)
     }
 
     /// Seeding from `/api/state` leaves the version nil ON PURPOSE: that payload
@@ -368,6 +370,101 @@ struct FleetApplierTests {
         }
         _ = applier.apply(frame)
         #expect(applier.composed(side: FleetSide())?.worktrees.count == 9)
+    }
+
+    // MARK: - The collector split (ADR 0016)
+
+    /// A minimal two-node frame: the SAME bare name on two machines — the exact
+    /// collision the qualified key exists to end.
+    static func twoNodeFrame() throws -> StreamFrame {
+        let json = """
+        {"type": "snapshot", "v": 7, "at": 1800000000,
+         "order": ["work/ConfidAI2", "mac/ConfidAI2"],
+         "cards": {
+           "mac/ConfidAI2": {
+             "name": "ConfidAI2", "node": "mac", "path": "/mac/ConfidAI2",
+             "git": {"branch": "main", "dirty": 0, "ahead": null, "behind": null},
+             "sessions": [], "live_procs": [], "availability": "free"},
+           "work/ConfidAI2": {
+             "name": "ConfidAI2", "node": "work", "path": "/work/ConfidAI2",
+             "git": {"branch": "main", "dirty": 2, "ahead": 1, "behind": 0},
+             "sessions": [], "live_procs": [], "availability": "free"}
+         },
+         "counts": {"working": 0, "needs_input": 0, "limit": 0, "blocked": 0,
+                    "waiting": 0, "ended": 0},
+         "other_procs": [],
+         "nodes": {"mac": {"label": "studio", "hostname": "studio.local", "user": "dev"},
+                   "work": {"label": "beast", "hostname": "beast.local", "user": "dev"}},
+         "freshness": {}}
+        """
+        return try StreamFrame.decode(Data(json.utf8))
+    }
+
+    /// **THE GATE (ADR 0016).** Two machines each hold a `ConfidAI2`; the frame
+    /// must apply to TWO cards with distinct identities, in the frame's order,
+    /// and the derived `free_worktrees` must speak qualified keys — a bare name
+    /// anywhere in this chain and one machine's card silently eats the other's,
+    /// which is precisely the pre-split failure mode.
+    @Test func twoNodesSameNameAreTwoCardsNotOne() throws {
+        var applier = FleetApplier()
+        #expect(applier.apply(try Self.twoNodeFrame()) == .applied)
+
+        #expect(applier.cards.count == 2, "a name-keyed dictionary drops one")
+        let composed = try #require(applier.composed(side: FleetSide()))
+        #expect(composed.worktrees.count == 2)
+        #expect(composed.worktrees.map(\.name) == ["ConfidAI2", "ConfidAI2"],
+                "the display name is the same on purpose — that is the collision")
+        #expect(composed.worktrees.map(\.id) == ["work/ConfidAI2", "mac/ConfidAI2"],
+                "distinct identities, in the frame's order")
+        #expect(Set(composed.worktrees.map(\.id)).count == 2)
+        // Derived exactly as the server derives its own list: qualified keys.
+        #expect(composed.freeWorktrees == ["work/ConfidAI2", "mac/ConfidAI2"])
+        #expect(composed.multiNode, "two nodes is the board the badge exists for")
+    }
+
+    /// `nodes` rides WHOLE on every frame — the fourth bump term — and reaches
+    /// `composed()`, because a node can appear with zero cards and the client
+    /// must be able to name every node its cards reference (NODES.md §6).
+    @Test func nodesRideEveryFrameAndReachTheComposedBoard() throws {
+        var applier = FleetApplier()
+        _ = applier.apply(try Self.twoNodeFrame())
+        #expect(applier.nodes.count == 2)
+        #expect(applier.nodes["mac"]?.label == "studio")
+        #expect(applier.nodes["work"]?.hostname == "beast.local")
+
+        // A delta replaces the map WHOLE — a third node arriving with zero
+        // cards is exactly the change that bumps the version with no card.
+        let delta = try StreamFrame.decode(Data("""
+        {"type": "delta", "v": 8, "base": 7, "at": 1800000001,
+         "order": ["work/ConfidAI2", "mac/ConfidAI2"], "cards": {},
+         "counts": {"working": 0, "needs_input": 0, "limit": 0, "blocked": 0,
+                    "waiting": 0, "ended": 0},
+         "other_procs": [],
+         "nodes": {"mac": {"label": "studio", "hostname": "studio.local", "user": "dev"},
+                   "work": {"label": "beast", "hostname": "beast.local", "user": "dev"},
+                   "spare": {"label": "spare", "hostname": "spare.local", "user": "dev"}},
+         "freshness": {}}
+        """.utf8))
+        #expect(applier.apply(delta) == .applied)
+        #expect(applier.nodes.count == 3, "the map is replaced whole, never patched")
+
+        let side = FleetSide(hostname: "studio.local", user: "dev", node: "mac")
+        let composed = try #require(applier.composed(side: side))
+        #expect(composed.nodes.count == 3)
+        #expect(composed.nodes["spare"] != nil)
+        #expect(composed.boardNode == "mac",
+                "the board's own node comes from the side fetch, like hostname")
+    }
+
+    /// Seeding from `/api/state` keys by the same rule the frames use — the
+    /// same board through either door, or a seeded client and a streaming one
+    /// disagree about what a card is even called.
+    @Test func seedingKeysCardsByTheirQualifiedKey() throws {
+        var applier = FleetApplier()
+        applier.seed(try DecodeTests.board())
+        #expect(applier.cards.keys.allSatisfy { $0.hasPrefix("starbase/") })
+        #expect(applier.cards["starbase/ConfidAI2"] != nil)
+        #expect(applier.nodes["starbase"] != nil, "seed carries the nodes map too")
     }
 }
 

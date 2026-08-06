@@ -8,7 +8,9 @@ disagrees with an earlier design note, this document wins.
 implementing the server. Both should be able to work from this file alone.
 
 **Scope:** everything under `/api/v1/`. The pre-existing unversioned paths (`/api/state`,
-`/api/send`, …) are frozen and documented in §16 for reference and migration only.
+`/api/send`, …) are frozen and documented in §16 for reference and migration only. The freeze
+has been broken exactly once, deliberately — ADR 0016 Phase 0, 2026-08-06; §16.1 carries the
+dated note and the field-level table.
 
 ---
 
@@ -889,6 +891,14 @@ j/<op_id>                   one operation                            descend
   `discover_worktrees` dedupes by path, so two roots each holding a `ConfidAI` directory
   produce two cards with the same name, which would silently overwrite in a name-keyed map.
   The `name` and `path` ride as fields of `w/<wid>`.
+
+  > **Note, 2026-08-06 (ADR 0016 Phase 0).** An abspath is unique only *within one
+  > machine*, and the shipped legacy wire now keys cards `<node>/<worktree>`
+  > ([`NODES.md`](NODES.md) §2). Node identity therefore folds into whatever id this
+  > surface eventually mints — `sha1` over `(node, abspath)`, a `<node>/<wid>` address;
+  > the choice stays open, and this unbuilt sketch is deliberately not redesigned here
+  > (NODES.md §11). The same applies to every `<wid>` below: `r/<wid>|<sid>`, lock keys,
+  > `worktree_id` fields.
 - **`sid`** is the full transcript UUID, not the 8-char display id.
 - Account labels are orchestra's `fb_label` (`"main"`, `"account8"`), never cclimits' `slug`
   — for the default home they differ (`slug: "default"` vs `fb_label: "main"`), and
@@ -3364,6 +3374,42 @@ phone may be in a different timezone from the Mac.
 
 ---
 
+### 9.25 `POST /api/v1/nodes/snapshot` — a collector's node snapshot
+
+**Built 2026-08-06 (ADR 0016 Phase 1; the shipped route — this section is
+written from the code, not a sketch).** A remote collector — a machine running
+`python3 -m orchestra --collect-to <board-url>`, which listens on nothing —
+POSTs its pre-merge node snapshot here; the board deposits it in the node
+registry (persisted in `nodes.cache.json`), nudges the sweep, and the next
+publish merges it into the one board under `<node>/<worktree>` keys.
+
+**Auth:** Bearer, an ordinary device token (scopes are deferred whole per
+ADR 0014; a dedicated collector credential is Phase 3 hardening).
+**Content-Type:** `application/json`, enforced by the CSRF guard like every
+mutation. **Body cap:** its own — config `node_snapshot_max_mb` (default
+1 MB), not the global 256 KB, for the same reason `/api/v1/uploads` carries
+its own. **No idempotency key:** latest-wins is the route's whole semantics.
+
+```json
+{"node": "work", "label": "Works-MacBook", "state": { …collect_state shape… },
+ "seq": 118, "sent_at": 1786020000.0}
+```
+
+| Status | When |
+|---|---|
+| 200 | deposited — `{"ok": true, "received_at": …}` |
+| 401 / 403 | auth, like every route |
+| 409 | `node_is_self` — the id is the board's own; a remote claiming the local identity is the one collision the qualified key cannot survive |
+| 413 | `too_large` — past `node_snapshot_max_mb` |
+| 422 | `node_invalid` / `state_invalid` |
+
+A node that stops POSTing keeps its cards on the board, dated by
+`freshness["node:<id>"]` (which rides `/api/state` and every frame). Nothing
+here deletes a node — a disappeared card reads as "all clear", the one lie
+the board refuses to tell. See `docs/mobile/NODES.md` §11.
+
+---
+
 ## 10. Enum reference
 
 ### 10.1 `session.status`
@@ -3725,6 +3771,32 @@ those read real files today and are unsafe for screenshots.
 > per path so you can see when the HTML has finished migrating. The legacy surface is
 > deleted once those counters stay at zero for a week.
 
+> **The freeze has been broken exactly once, deliberately — 2026-08-06, ADR 0016 Phase 0
+> (the collector split).** One board now watches N machines, and on such a board a bare
+> worktree name is not an identity: two machines can each hold a `ConfidAI2`. A shim that
+> kept the old bytes would have preserved exactly the collision the change exists to end,
+> so the legacy bodies moved, once, with every client in the same commit —
+> [`NODES.md`](NODES.md) is the design; `stream.js`, `index.html`, `map.html` and the iOS
+> wire model are the coordinated client halves. The field-level changes, complete:
+>
+> | surface | before | since 2026-08-06 |
+> |---|---|---|
+> | every card in `worktrees[]` (state and frames) | no node field; `name` was the identity | gains `"node"`; the card key is `<node>/<worktree>` and `name` demotes to the node-local label |
+> | `/api/state` and every `/api/events` frame | — | gain `"nodes"`: `{"<id>": {"label", "hostname", "user"}}`, riding **whole on every frame** — the fourth bump term (a node can appear with zero cards, which must move the version with no card changing) |
+> | `/api/state`, top level | — | gains `"node"`: the board's **own** node id, the client's only honest way to tell local from remote (a remote node's process must not offer ⌖ focus) |
+> | `free_worktrees` | bare names | qualified keys |
+> | frame `cards` keys and `order` entries | bare names | qualified keys (the delta ring stores them; a client holding bare-name state resyncs via the full snapshot) |
+> | `resumes` | dict keyed `"worktree\|sid"`, each record's `worktree` bare | keyed `"<node>/<worktree>\|<sid>"`, each record's `worktree` qualified |
+> | `/api/topology` `branches[]` | `worktree` only | gain `"node"`; the map joins topology to state by the derived key |
+> | `other_procs[]` entries | pid/tty/cwd only | gain `"node"` (pids stay node-local hints — ADR 0016) |
+> | `/api/dispatchlog` entries; `/api/dispatch` and `/api/dispatch/status` results | `worktree` bare | `worktree` qualified (old log rows are this node's own history, qualified with the local id on read) |
+> | the `worktree`/`wt` param of `/api/send`, `/api/finish`, `/api/dispatch`, `/api/resume/schedule`, `/api/resume/cancel`, `/api/focus` | bare name | accepts the qualified key; a bare value reads as **the board's own node** (a bare name can never address a remote machine); a foreign node id is refused by name: `{"ok": false, "error": "unknown_node", …}` |
+> | top-level `hostname`/`user` | the machine | **unchanged in meaning: the board host**, constant for the life of the process, still fetched on the side path — per-node identity lives in `nodes` |
+> | `--demo` | bare names, hostname `"starbase"` | the exact live shape: demo node id `"starbase"`, qualified keys throughout |
+>
+> Everything else in §16.1 stands: still no new unversioned endpoints, still computed from
+> the same snapshot v1 will serve, still `Deprecation: true` on every response.
+
 **Do not implement a mobile client against these.** They are documented for migration and
 for reading the existing HTML.
 
@@ -3732,7 +3804,7 @@ for reading the existing HTML.
 
 | Legacy | v1 successor | Notable differences |
 |---|---|---|
-| `GET /api/state` | `GET /api/v1/state` + `GET /api/v1/worktrees/{wid}` | legacy has `age_s` (relative), no absolute activity time, no ids, no `resumes` array (it is a dict keyed `"worktree\|sid"` with a literal pipe), and merges `resumes` in at the handler rather than in the collector |
+| `GET /api/state` | `GET /api/v1/state` + `GET /api/v1/worktrees/{wid}` | legacy has `age_s` (relative), no absolute activity time, no ids, no `resumes` array (it is a dict keyed `"<node>/<worktree>\|sid"` with a literal pipe — bare `"worktree\|sid"` until ADR 0016 Phase 0, §16.1), and merges `resumes` in at the handler rather than in the collector |
 | `GET /api/topology` | `GET /api/v1/topology` | legacy silently drops worktrees whose base ref or merge-base fails, with no `dropped` list |
 | `GET /api/limits`, `?refresh=1` | `GET /api/v1/limits`, `POST /api/v1/limits/refresh` | legacy `refresh=1` blocks synchronously for up to 90 s, past iOS's default request timeout. Legacy `generated_at` is an ISO-8601 **string** here while `/api/state`'s is a **float** — same name, different type. Legacy `accounts[].limits[].resets_at` is an ISO-8601 string while `session.limit.resets_at` is a float epoch — same name, different type, in payloads fetched together. Legacy drops `ok: false` accounts entirely. |
 | `GET /api/chat?account=&sid=` | `GET /api/v1/sessions/{sid}/messages` | legacy is hardcoded to the last 40 messages from a 512 KiB tail, has no pagination, no cursor and no `has_more`, and never percent-decodes `account` |

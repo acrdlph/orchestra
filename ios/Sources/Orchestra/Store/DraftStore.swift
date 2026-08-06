@@ -14,6 +14,11 @@ public struct MissionDraft: Codable, Sendable, Equatable {
     public static let representWindow: TimeInterval = 24 * 60 * 60
 
     public var mission: String
+    /// The picker's chosen target — the qualified card key `<node>/<worktree>`
+    /// since ADR 0016 (the picker's values are `free_worktrees` entries, and
+    /// the key is what `/api/dispatch` takes). A draft persisted before the
+    /// split holds a bare name, which the server still reads as "the board's
+    /// own node" — the safe reading, so old drafts keep working.
     public var worktree: String?
     public var account: String?
     public var model: String?

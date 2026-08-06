@@ -74,10 +74,12 @@ class TestProjection(unittest.TestCase):
         self.assertEqual(notify.derive(p1, p2), [])
 
     def test_it_reads_a_dict_snapshot_too(self):
-        snap = {"worktrees": [{"name": "wt", "availability": "free",
-                               "sessions": []}]}
+        # a board card, so it carries `node` — project() keys dict snapshots
+        # by the same `<node>/<worktree>` the publish point mints (ADR 0016)
+        snap = {"worktrees": [{"name": "wt", "node": "n1",
+                               "availability": "free", "sessions": []}]}
         p = notify.project(snap)
-        self.assertEqual(p["worktrees"], {"wt": "free"})
+        self.assertEqual(p["worktrees"], {"n1/wt": "free"})
 
     def test_a_finished_dispatch_job_projects_its_result(self):
         jobs = {"job-1": {"done": True,

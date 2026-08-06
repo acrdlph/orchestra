@@ -10,7 +10,11 @@ import Testing
 /// same trailing ellipsis, `/Users/achill` rewritten, session UUIDs replaced with
 /// stable hashes that keep the `id`-is-a-prefix-of-`sid` invariant. Everything
 /// that decides a decode — which keys are present, which are null, which are
-/// absent entirely — is untouched.
+/// absent entirely — is untouched. Re-shaped 2026-08-06 to the post-split wire
+/// (ADR 0016): node `"starbase"` on every card, branch and loose process,
+/// qualified keys in `free_worktrees`/`order`/frame `cards`, a `nodes` map on
+/// both payloads, and top-level `node` on `/api/state` — mirroring what
+/// `observer.board_state`/`merge_nodes` now emit.
 ///
 /// `METHOD.md` §5's rule applies here: this suite patches nothing and calls only
 /// the public decode path, so it keeps working across a refactor and cannot pass
@@ -35,6 +39,20 @@ struct DecodeTests {
         #expect(state.otherProcs.count == 5)
         #expect(state.counts.ended == 32)
         #expect(state.generatedAt > 1_700_000_000)
+        // The post-split identity (ADR 0016): every card carries its node, the
+        // payload describes that node, and the board names its own.
+        #expect(state.worktrees.allSatisfy { $0.node == "starbase" })
+        #expect(state.freeWorktrees.allSatisfy { $0.hasPrefix("starbase/") })
+        #expect(state.otherProcs.allSatisfy { $0.node == "starbase" })
+        #expect(state.nodes["starbase"] != nil)
+        #expect(state.boardNode == "starbase")
+        #expect(!state.multiNode, "one node is not a multi-node board")
+        // The invariant, client-side half (NODES.md §6): every node a payload
+        // references is described by that payload's `nodes` map.
+        for card in state.worktrees {
+            #expect(state.nodes[card.node] != nil,
+                    "\(card.key) references a node the payload does not describe")
+        }
     }
 
     /// The trap this whole model layer is shaped around.
@@ -241,6 +259,14 @@ struct DecodeTests {
                 "order and cards must name the same fleet on a snapshot")
         #expect(frame.freshness.oldest() != nil)
         #expect(frame.otherProcs.count == 5)
+        // Qualified keys and the nodes map (ADR 0016): a frame's `cards` keys
+        // ARE card keys, and the frame describes every node they reference.
+        #expect(frame.order.allSatisfy { $0.hasPrefix("starbase/") })
+        #expect(frame.nodes["starbase"] != nil)
+        for card in frame.changedCards.values {
+            #expect(frame.nodes[card.node] != nil,
+                    "\(card.key) references a node the frame does not describe")
+        }
     }
 
     /// A delta names only the cards that moved, and everything else rides whole.
@@ -300,5 +326,78 @@ struct DecodeTests {
         #expect(health.ok)
         #expect(health.api == "1.0")
         #expect(health.time > 1_700_000_000)
+    }
+}
+
+/// The card key's grammar (ADR 0016, NODES.md §2) — one derivation rule, one
+/// right-split parser, pinned where they live so every consumer (the applier,
+/// the routes, `DebugRoute`'s deep-link grammar in `App/`, which this target
+/// cannot see) argues with the same test.
+struct CardKeyTests {
+
+    /// `Worktree.key`/`id` derivation, including the bare-name fallback that
+    /// keeps this model loadable against a pre-split server.
+    @Test func aCardsIdentityIsItsQualifiedKeyWithABareFallback() throws {
+        func card(_ extra: String) throws -> Worktree {
+            let json = """
+            {"name": "ConfidAI2", \(extra)"path": "/x", "availability": "free",
+             "git": {"branch": "main", "dirty": 0, "ahead": null, "behind": null},
+             "sessions": [], "live_procs": []}
+            """
+            return try JSONDecoder().decode(Worktree.self, from: Data(json.utf8))
+        }
+        let qualified = try card(#""node": "work", "#)
+        #expect(qualified.node == "work")
+        #expect(qualified.key == "work/ConfidAI2")
+        #expect(qualified.id == qualified.key, "the key IS the identity")
+
+        // A pre-split server omits `node`: the name is the key, byte for byte —
+        // the same no-node fallback stream.js's `cardKey` keeps.
+        let bare = try card("")
+        #expect(bare.node == "")
+        #expect(bare.key == "ConfidAI2")
+        #expect(bare.id == "ConfidAI2")
+
+        #expect(CardKey.make(node: "work", name: "ConfidAI2") == "work/ConfidAI2")
+        #expect(CardKey.make(node: "", name: "ConfidAI2") == "ConfidAI2")
+        #expect(CardKey.bareName("work/ConfidAI2") == "ConfidAI2")
+        #expect(CardKey.bareName("ConfidAI2") == "ConfidAI2")
+        #expect(CardKey.node("work/ConfidAI2") == "work")
+        #expect(CardKey.node("ConfidAI2") == "")
+    }
+
+    /// The `DebugRoute` grammar's contract: `chat:<wt>/<account>/<sid>` parses
+    /// FROM THE RIGHT (NODES.md §7), because the worktree position now holds a
+    /// key with a `/` of its own while account labels and sids cannot contain
+    /// one. A left split hands half the key to the account — the exact break
+    /// this parser exists to prevent.
+    @Test func theDeepLinkGrammarRoundTripsAQualifiedKeyFromTheRight() throws {
+        let sid = "ca1c96e9-7b30-4c58-9a11-2d6e83f0b415"
+        let parsed = try #require(
+            CardKey.worktreeAccountSid("starbase/ConfidAI2/account2/\(sid)"))
+        #expect(parsed.worktree == "starbase/ConfidAI2")
+        #expect(parsed.account == "account2")
+        #expect(parsed.sid == sid)
+
+        // The pre-split spelling still parses — a bare name has no `/`.
+        let bare = try #require(CardKey.worktreeAccountSid("ConfidAI2/main/\(sid)"))
+        #expect(bare.worktree == "ConfidAI2")
+        #expect(bare.account == "main")
+
+        // And the round trip: the route re-joined is the route parsed.
+        let joined = "\(parsed.worktree)/\(parsed.account)/\(parsed.sid)"
+        let again = try #require(CardKey.worktreeAccountSid(joined))
+        #expect(again.worktree == parsed.worktree)
+        #expect(again.account == parsed.account)
+        #expect(again.sid == parsed.sid)
+
+        // Too few segments is a refusal, not a guess.
+        #expect(CardKey.worktreeAccountSid("only/two") == nil)
+
+        // `resume:<wt>/<sid>` — same rule, one trailing segment.
+        let resume = try #require(CardKey.worktreeSid("starbase/ConfidAI2/\(sid)"))
+        #expect(resume.worktree == "starbase/ConfidAI2")
+        #expect(resume.sid == sid)
+        #expect(CardKey.worktreeSid("justone") == nil)
     }
 }

@@ -39,12 +39,14 @@ import orchestra as fb  # noqa: E402
 
 
 def state(at, *, cards=(("alpha", 0),), counts=None, other_cpu=0.5):
-    """A `collect_state()` result, hand-built. `publish` reads four keys."""
+    """A `collect_state()` result, hand-built. `publish` reads five keys; the
+    cards carry the `node` stamp `merge_nodes` would give them, because
+    `publish` keys cards `<node>/<worktree>` and raises without it (ADR 0016)."""
     return {
         "generated_at": at,
         "counts": counts or {"working": len(cards)},
         "worktrees": [
-            {"name": name, "availability": "busy",
+            {"name": name, "node": "n1", "availability": "busy",
              "git": {"branch": "main", "dirty": dirty},
              "sessions": [{"sid": f"s-{name}", "status": "working",
                            "last_write_at": 1000.0}],
@@ -242,7 +244,7 @@ class TestTheStream(StreamGuard):
         fid, event, data = frame(wire.next())
         self.assertEqual((fid, event), (1, "state"))
         self.assertEqual(data["type"], "snapshot")
-        self.assertEqual(set(data["cards"]), {"alpha", "beta"})
+        self.assertEqual(set(data["cards"]), {"n1/alpha", "n1/beta"})
         self.assertIn("counts", data)
         self.assertIn("freshness", data)
 
@@ -263,7 +265,7 @@ class TestTheStream(StreamGuard):
             fid, _, data = frame(wire.next())
             self.assertEqual(fid, ver)
             self.assertEqual(data["v"], ver)
-            self.assertEqual(data["cards"]["alpha"]["git"]["dirty"], i)
+            self.assertEqual(data["cards"]["n1/alpha"]["git"]["dirty"], i)
 
     def test_a_publish_that_does_not_move_the_version_sends_nothing(self):
         """§3.2 is the whole point: a sweep that found nothing is silence.
@@ -317,7 +319,7 @@ class TestResume(StreamGuard):
         self.assertEqual(fid, 3)
         self.assertEqual(data["type"], "delta")
         self.assertEqual(data["base"], 2)
-        self.assertEqual(set(data["cards"]), {"alpha"})     # beta never moved
+        self.assertEqual(set(data["cards"]), {"n1/alpha"})  # beta never moved
 
     def test_a_resumed_stream_carries_on_from_its_cursor(self):
         self.wind(3)
@@ -347,7 +349,7 @@ class TestResume(StreamGuard):
         wire, _ = self.connect(Last_Event_ID=1)
         _, _, data = frame(wire.next())
         self.assertEqual(data["type"], "snapshot")
-        self.assertEqual(set(data["cards"]), {"alpha", "beta"})
+        self.assertEqual(set(data["cards"]), {"n1/alpha", "n1/beta"})
 
     def test_a_cursor_ahead_of_the_server_is_pulled_back_not_stranded(self):
         """A restarted server counts from 1 again. A client holding v=900 would
@@ -688,7 +690,7 @@ class TestOnTheWire(unittest.TestCase):
         sub = self.subscribe(last=self.obs.snapshot().v - 1)
         _, _, data = sub.frame()
         self.assertEqual(data["type"], "delta")
-        self.assertEqual(set(data["cards"]), {"alpha"})
+        self.assertEqual(set(data["cards"]), {"n1/alpha"})
 
 
 if __name__ == "__main__":

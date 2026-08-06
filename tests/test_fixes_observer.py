@@ -47,8 +47,16 @@ class CacheGuard(unittest.TestCase):
         self._collect = fb.observer.collect_state
         self._watch = fb.CFG.get("watch")
         fb.CFG["watch"] = False
+        # …and the node id pinned, for the same hermeticity: the sweep and
+        # request paths compose the BOARD now (ADR 0016), and node.node_id()
+        # must not read the repo's own node.json into a card key.
+        self._node = fb.CFG.get("node")
+        fb.CFG["node"] = "n1"
+        fb.node._reset()
 
     def tearDown(self):
+        fb.CFG["node"] = self._node
+        fb.node._reset()
         fb.CFG["watch"] = self._watch
         fb.observer.collect_state = self._collect
         fb.observer._observer = self._glob
@@ -155,12 +163,13 @@ class TestRequestPathCacheCAS(CacheGuard):
 
 def state_with(at, dirty):
     """A collect_state() shape with one real card, so a content change (the
-    `dirty` count) can move the version. `at` is the wall `generated_at`."""
+    `dirty` count) can move the version. `at` is the wall `generated_at`. The
+    card carries the `node` stamp `publish` keys on (ADR 0016)."""
     return {
         "generated_at": at,
         "counts": {"working": 1},
         "worktrees": [
-            {"name": "alpha", "availability": "busy",
+            {"name": "alpha", "node": "n1", "availability": "busy",
              "git": {"branch": "main", "dirty": dirty},
              "sessions": [{"sid": "s-alpha", "status": "working",
                            "last_write_at": 1000.0}],
@@ -186,7 +195,7 @@ class TestBackwardsWallStepDoesNotFreezeThePublisher(CacheGuard):
         self.assertEqual(o.snapshot().v, 1)
         snap = o.publish(state_with(1000.0, dirty=2), mono=101.0)  # wall -4000s
         self.assertEqual(snap.v, 2, "a backwards wall step froze the version")
-        self.assertEqual(snap.cards["alpha"]["git"]["dirty"], 2)   # the NEW data
+        self.assertEqual(snap.cards["n1/alpha"]["git"]["dirty"], 2)   # the NEW data
         self.assertEqual(snap.at, 1000.0)   # …and `at` is still the wall clock
 
     def test_the_sweep_loop_keeps_publishing_across_a_backwards_wall_step(self):
@@ -207,7 +216,7 @@ class TestBackwardsWallStepDoesNotFreezeThePublisher(CacheGuard):
         snap = o.snapshot()
         self.assertEqual(snap.v, v1 + 1, "the loop stopped publishing after the "
                                          "wall clock stepped backwards")
-        self.assertEqual(snap.cards["alpha"]["git"]["dirty"], 2)
+        self.assertEqual(snap.cards["n1/alpha"]["git"]["dirty"], 2)
         self.assertEqual(snap.at, 1000.0)            # wire stamp stays wall
 
     def test_without_a_token_the_guard_still_orders_on_wall(self):
@@ -218,7 +227,7 @@ class TestBackwardsWallStepDoesNotFreezeThePublisher(CacheGuard):
         o.publish(state_with(2000.0, dirty=1))
         snap = o.publish(state_with(1000.0, dirty=2))   # older wall, no token
         self.assertEqual(snap.v, 1)                     # regressed, as before
-        self.assertEqual(snap.cards["alpha"]["git"]["dirty"], 1)
+        self.assertEqual(snap.cards["n1/alpha"]["git"]["dirty"], 1)
 
 
 class TestForwardsWallJumpDoesNotDoublePublish(CacheGuard):
@@ -243,7 +252,7 @@ class TestForwardsWallJumpDoesNotDoublePublish(CacheGuard):
         o.publish(state_with(1000.0, dirty=1), mono=200.0)
         snap = o.publish(state_with(1001.0, dirty=2), mono=150.0)  # older token
         self.assertEqual(snap.v, 1)
-        self.assertEqual(snap.cards["alpha"]["git"]["dirty"], 1)
+        self.assertEqual(snap.cards["n1/alpha"]["git"]["dirty"], 1)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
   "_readme": "Copy this to orchestra.config.json (gitignored) and fill in your values. Every key is optional; delete what you do not use. The apns_* keys are only needed for push to the iOS app — see docs/mobile/APNS-SETUP.md.",
 
   "roots": ["/Users/YOU/code"],
+  "_node": "this machine's identity on the board — cards key as <node>/<worktree> (ADR 0016). Leave empty: a stable id is minted once into node.json. Set it only for taste ('work'); lowercase letters, digits and '-' only.",
+  "node": "",
   "pattern": "",
   "exclude_accounts": [],
   "reserve_percent": {"main": 20},

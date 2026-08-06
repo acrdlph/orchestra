@@ -1,5 +1,9 @@
 orchestra.config.json
 dispatch.log.jsonl
+node.json
+node.json.tmp
+nodes.cache.json
+nodes.cache.json.tmp
 resume.schedule.json
 devices.json
 devices.json.tmp

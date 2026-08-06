@@ -67,19 +67,30 @@ process.stdin.on("end", () => {
 """
 
 
+def card_key(w):
+    """The one derivation rule (ADR 0016) — `stream.js`'s `cardKey`, so the
+    Python side of every three-way check names cards the way the applier
+    under test does."""
+    return f"{w['node']}/{w['name']}" if w.get("node") else w["name"]
+
+
 def fleet_state(at, cards, other=(9,), counts=None):
     """A `collect_state()` result with card order, status and availability all
-    under the test's control. `cards` is [(name, dirty, status, availability)]."""
+    under the test's control. `cards` is [(name, dirty, status, availability)].
+    Cards carry the `node` stamp the merge would give them, and `nodes` is the
+    board's node map — the fourth bump term, riding whole on every frame."""
     return {
         "generated_at": at,
         "counts": counts or {"working": len(cards)},
         "worktrees": [
-            {"name": name, "availability": avail,
+            {"name": name, "node": "n1", "availability": avail,
              "git": {"branch": "main", "dirty": dirty},
              "sessions": [{"sid": f"s-{name}", "status": st,
                            "last_write_at": 1000.0}],
              "live_procs": []}
             for name, dirty, st, avail in cards],
+        "nodes": {"n1": {"label": "n-one", "hostname": "n1.local",
+                         "user": "me"}},
         "other_procs": [{"pid": pid, "cpu": 0.5, "etime": "01:00",
                          "cwd": "/elsewhere"} for pid in other],
     }
@@ -87,32 +98,37 @@ def fleet_state(at, cards, other=(9,), counts=None):
 
 def board(st):
     """What the board draws off one composed state — the order included, since
-    a dict compares equal however its keys are arranged."""
-    return {"names": [w["name"] for w in st["worktrees"]],
+    a dict compares equal however its keys are arranged. Names are the
+    qualified card keys, the identity every client keys its registries on."""
+    return {"names": [card_key(w) for w in st["worktrees"]],
             "cards": st["worktrees"],
             "counts": st["counts"],
             "other_procs": st["other_procs"],
-            "free_worktrees": st["free_worktrees"]}
+            "free_worktrees": st["free_worktrees"],
+            "nodes": st["nodes"]}
 
 
 def from_snapshot(snap):
     """The same, from the snapshot taken WHOLE — what a client that had just
-    connected would render. `free_worktrees` mirrors observer.collect_state."""
-    wts = list(snap.cards.values())
-    return {"names": list(snap.cards), "cards": wts, "counts": snap.counts,
+    connected would render. `free_worktrees` mirrors observer.merge_nodes:
+    qualified keys, in board order."""
+    return {"names": list(snap.cards), "cards": list(snap.cards.values()),
+            "counts": snap.counts,
             "other_procs": snap.other_procs,
-            "free_worktrees": [c["name"] for c in wts
-                               if c["availability"] == "free"]}
+            "free_worktrees": [k for k, c in snap.cards.items()
+                               if c["availability"] == "free"],
+            "nodes": snap.nodes}
 
 
 def from_client(client):
     """And from the Python reference applier, so the two appliers are checked
     against each other and not only against the server."""
-    wts = list(client.cards.values())
-    return {"names": list(client.cards), "cards": wts, "counts": client.counts,
+    return {"names": list(client.cards), "cards": list(client.cards.values()),
+            "counts": client.counts,
             "other_procs": client.other,
-            "free_worktrees": [c["name"] for c in wts
-                               if c["availability"] == "free"]}
+            "free_worktrees": [k for k, c in client.cards.items()
+                               if c["availability"] == "free"],
+            "nodes": client.nodes}
 
 
 @unittest.skipUnless(NODE, "node not available")
@@ -137,9 +153,9 @@ class StreamJS(unittest.TestCase):
         the Python reference applier holds.
 
         The script walks EVERY term that can bump the version — cards, `counts`,
-        `other_procs` — because a term that moves `v` and does not reach this
-        applier is a board that is told something changed and cannot find out
-        what (observer.delta_since's audit)."""
+        `other_procs`, `nodes` — because a term that moves `v` and does not
+        reach this applier is a board that is told something changed and cannot
+        find out what (observer.delta_since's audit)."""
         obs, ref = fb.Observer(), Client()
         script = [
             ([("alpha", 0, "working", "busy"), ("beta", 0, "working", "busy")], (9,), None),
@@ -183,8 +199,21 @@ class StreamJS(unittest.TestCase):
             ref.apply(frame)
             steps.append({"op": "apply", "frame": frame})
             expected.append((from_snapshot(obs.snapshot()), from_client(ref)))
+        # …and the fourth bump term alone (ADR 0016): a node appears with ZERO
+        # cards — the version moves, the delta names no card, and the nodes
+        # map must still reach the applier whole
+        cards, other, counts = script[-1]
+        grown = fleet_state(2000.0, cards, other=other, counts=counts)
+        grown["nodes"]["n2"] = {"label": "n-two", "hostname": "n2.local",
+                                "user": "me"}
+        obs.publish(grown)
+        frame = obs.delta_since(ref.v)
+        self.assertEqual(frame["cards"], {}, "no card changed")
+        ref.apply(frame)
+        steps.append({"op": "apply", "frame": frame})
+        expected.append((from_snapshot(obs.snapshot()), from_client(ref)))
         self.assertEqual([s["frame"]["type"] for s in steps][1:],
-                         ["delta"] * (len(script) - 1), "only the first is a snapshot")
+                         ["delta"] * (len(steps) - 1), "only the first is a snapshot")
 
         got = self.run_js(steps)
         for i, (res, (want_snap, want_ref)) in enumerate(zip(got, expected)):
@@ -229,7 +258,7 @@ class StreamJS(unittest.TestCase):
                            {"op": "apply", "frame": after}])
         self.assertEqual([r["verdict"] for r in got], ["applied", "gap"])
         # unchanged: still the single card from the first frame
-        self.assertEqual(board(got[1]["state"])["names"], ["alpha"])
+        self.assertEqual(board(got[1]["state"])["names"], ["n1/alpha"])
         self.assertEqual(got[1]["v"], first["v"])
 
     def test_a_delta_on_a_polled_seed_is_a_gap_rather_than_a_guess(self):
@@ -260,10 +289,10 @@ class StreamJS(unittest.TestCase):
         got = self.run_js([{"op": "apply", "frame": first},
                            {"op": "apply", "frame": fresh}])
         self.assertEqual([r["verdict"] for r in got], ["applied", "applied"])
-        self.assertEqual(board(got[1]["state"])["names"], ["gamma"])
+        self.assertEqual(board(got[1]["state"])["names"], ["n1/gamma"])
 
     def test_the_composed_state_has_the_shape_the_board_renders(self):
-        """render() reads eight keys off /api/state. The worker rebuilds that
+        """render() reads nine keys off /api/state. The worker rebuilds that
         object from frames plus the side fetch, and a missing key is a blank
         board rather than an error."""
         obs = fb.Observer()
@@ -273,8 +302,8 @@ class StreamJS(unittest.TestCase):
         st = got[0]["state"]
         self.assertEqual(set(st), {"generated_at", "hostname", "user", "counts",
                                    "free_worktrees", "worktrees", "other_procs",
-                                   "resumes"})
-        self.assertEqual(st["free_worktrees"], ["gamma"])
+                                   "nodes", "freshness", "resumes"})
+        self.assertEqual(st["free_worktrees"], ["n1/gamma"])
         self.assertEqual(st["generated_at"], 1000.0)
 
     def test_the_worker_half_never_runs_under_node(self):
@@ -293,7 +322,7 @@ class StreamJS(unittest.TestCase):
         proc = subprocess.run([NODE, str(driver), str(STREAM_JS)],
                               capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(proc.stdout), ["Fleet"])
+        self.assertEqual(json.loads(proc.stdout), ["Fleet", "cardKey"])
 
 
 class StreamJSIsServed(unittest.TestCase):

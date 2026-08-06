@@ -348,7 +348,9 @@ public struct MissionComposer: View {
     @ViewBuilder
     private var pickers: some View {
         VStack(spacing: 0) {
-            pickerRow(.worktree, value: worktree ?? "Auto")
+            // The stored value is the card KEY (that is what `/api/dispatch`
+            // takes); the row shows the bare name (NODES.md §7).
+            pickerRow(.worktree, value: worktree.map(CardKey.bareName) ?? "Auto")
             Divider().overlay(Palette.hairline)
             pickerRow(.account, value: account ?? "Auto")
             Divider().overlay(Palette.hairline)
@@ -369,11 +371,17 @@ public struct MissionComposer: View {
         switch field {
         case .worktree:
             // The free list is the server's own `free_worktrees`, which is a
-            // pure function of the cards. It is not re-derived here.
+            // pure function of the cards — QUALIFIED keys since ADR 0016, and
+            // the key is what the option's VALUE carries into `/api/dispatch`.
+            // The title is the bare name; the node rides as the note only when
+            // a second node makes the name ambiguous (NODES.md §7).
+            let multiNode = fleet.state?.multiNode == true
             return [PickerOption(value: nil, title: "Auto — the server picks",
                                  note: "the cleanest free worktree")]
-                + (fleet.state?.freeWorktrees ?? []).map {
-                    PickerOption(value: $0, title: $0)
+                + (fleet.state?.freeWorktrees ?? []).map { key in
+                    let node = CardKey.node(key)
+                    return PickerOption(value: key, title: CardKey.bareName(key),
+                                        note: multiNode && !node.isEmpty ? "on \(node)" : nil)
                 }
         case .account:
             return [PickerOption(value: nil, title: "Auto — most headroom",
@@ -552,7 +560,7 @@ struct LaunchConfirmSheet: View {
                 SheetHeader("Launch this mission?", symbol: "bolt.horizontal",
                             hue: Palette.statusNeeds)
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    ConsequenceRow(worktree ?? "Auto — the cleanest free worktree",
+                    ConsequenceRow(worktree.map(CardKey.bareName) ?? "Auto — the cleanest free worktree",
                                    arrow: "folder", hue: Palette.statusFree)
                     ConsequenceRow(account.map { "[\($0)]" } ?? "Auto — most headroom",
                                    detail: accountLimits?.headroomPercent
@@ -686,7 +694,8 @@ struct DispatchProgressView: View {
         VStack(alignment: .leading, spacing: Space.xs) {
             ConsequenceRow("\(run.model) · effort \(run.effort)", arrow: "cpu",
                            hue: Palette.textPrimary)
-            ConsequenceRow(run.worktree ?? "auto", arrow: "folder", hue: Palette.statusFree)
+            ConsequenceRow(run.worktree.map(CardKey.bareName) ?? "auto",
+                           arrow: "folder", hue: Palette.statusFree)
             if let job = run.job {
                 ConsequenceRow(job, arrow: "number", hue: Palette.textTertiary)
             }

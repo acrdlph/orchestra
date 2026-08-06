@@ -130,17 +130,18 @@ public struct FleetView: View {
             }
             .navigationDestination(for: FleetRoute.self) { route in
                 switch route {
-                case .worktree(let name):
-                    WorktreeDetailView(name: name, store: store, actions: actions,
+                case .worktree(let key):
+                    WorktreeDetailView(name: key, store: store, actions: actions,
                                        client: client, initialSheet: initialSheet)
                 case .chat(let worktree, let account, let sid):
                     ChatView(worktree: worktree, account: account, sid: sid,
                              store: store, client: client,
                              autoSend: store.isDemo ? nil : initialSend)
                 case .map:
+                    // Card KEYS on both sides of the map's joins (ADR 0016).
                     BranchMapView(store: topology, board: boardJoin,
-                                  boardWorktrees: store.state?.worktrees.map(\.name) ?? []) { name in
-                        path.append(.worktree(name))
+                                  boardWorktrees: store.state?.worktrees.map(\.key) ?? []) { key in
+                        path.append(.worktree(key))
                     }
                 }
             }
@@ -186,14 +187,15 @@ public struct FleetView: View {
     /// Resolve the pending notification deep link against the board, completing
     /// the address the payload could not carry.
     ///
-    /// The payload names a worktree and a session but **no account** — it never
-    /// had one — so the account the chat screen needs is looked up from the live
-    /// board by sid, HERE, where the board is in hand. While the board is still
-    /// loading the link is HELD (not discarded), and `onChange(of: store.version)`
-    /// retries — so a cold-launch tap lands on the conversation once the frame
-    /// arrives. Only once the board has loaded and the session is genuinely
-    /// absent does it settle for the worktree. An account-level event with no
-    /// worktree leaves the board up.
+    /// The payload names a worktree (`wt` — the qualified card KEY since
+    /// ADR 0016) and a session but **no account** — it never had one — so the
+    /// account the chat screen needs is looked up from the live board by sid,
+    /// HERE, where the board is in hand. While the board is still loading the
+    /// link is HELD (not discarded), and `onChange(of: store.version)` retries —
+    /// so a cold-launch tap lands on the conversation once the frame arrives.
+    /// Only once the board has loaded and the session is genuinely absent does
+    /// it settle for the worktree. An account-level event with no worktree
+    /// leaves the board up.
     private func tryNavigate() {
         guard let link = pendingLink else { return }
         if link.isBoardOnly || (link.worktree ?? "").isEmpty {
@@ -201,21 +203,21 @@ public struct FleetView: View {
             pendingLink = nil
             return
         }
-        let name = link.worktree ?? ""
+        let key = link.worktree ?? ""
         guard let sid = link.sid, !sid.isEmpty else {
-            path = [.worktree(name)]
+            path = [.worktree(key)]
             pendingLink = nil
             return
         }
-        if let card = store.state?.worktrees.first(where: { $0.name == name }),
+        if let card = store.state?.worktrees.first(where: { $0.id == key }),
            let session = card.sessions.first(where: { $0.sid == sid }) {
-            path = [.worktree(name), .chat(worktree: name, account: session.account, sid: sid)]
+            path = [.worktree(key), .chat(worktree: key, account: session.account, sid: sid)]
             pendingLink = nil
         } else if store.state != nil {
             // The board is loaded and this session is not on it — land on the
             // worktree, the best surviving context for what the notification was
             // about, rather than waiting for a session that will not appear.
-            path = [.worktree(name)]
+            path = [.worktree(key)]
             pendingLink = nil
         }
         // else: board not loaded yet — hold the link and let the version change
@@ -266,11 +268,12 @@ public struct FleetView: View {
                     SwiftUI.Section {
                         if !collapsed.contains(group.section) {
                             ForEach(group.cards) { card in
-                                NavigationLink(value: FleetRoute.worktree(card.name)) {
+                                NavigationLink(value: FleetRoute.worktree(card.id)) {
                                     WorktreeCardView(card: card,
                                                      section: group.section,
                                                      now: now,
-                                                     resumes: resumes(for: card))
+                                                     resumes: resumes(for: card),
+                                                     nodeBadge: nodeBadge(for: card))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -449,24 +452,35 @@ public struct FleetView: View {
         .padding(.top, Space.sm)
     }
 
-    /// The board → map join, by worktree name. Computed here because this view
+    /// The node badge for a card — the node id, and ONLY on a board holding
+    /// more than one node (NODES.md §7): the single-machine board must render
+    /// exactly as it did before the split.
+    private func nodeBadge(for card: Worktree) -> String? {
+        store.state?.multiNode == true ? card.node : nil
+    }
+
+    /// The board → map join, by the card KEY. Computed here because this view
     /// already holds the live board; the map takes it as a value so a status
     /// change recolours a tip with no topology fetch (§5.11).
     private var boardJoin: [String: MapBoardInfo] {
         var out: [String: MapBoardInfo] = [:]
+        let multiNode = store.state?.multiNode == true
         for card in store.state?.worktrees ?? [] {
-            out[card.name] = MapBoardInfo(
+            out[card.key] = MapBoardInfo(
                 section: Triage.section(for: card),
                 sessionCount: card.sessions.count,
-                working: card.sessions.contains { $0.status == .working })
+                working: card.sessions.contains { $0.status == .working },
+                nodeBadge: multiNode ? card.node : nil)
         }
         return out
     }
 
-    /// `resumes` is keyed `"{worktree}|{sid}"` with a literal pipe.
+    /// `resumes` is keyed `"<node>/<worktree>|{sid}"` with a literal pipe, and
+    /// each schedule's `worktree` field is the card KEY — the join is by
+    /// `card.key`, never the bare name.
     private func resumes(for card: Worktree) -> [ResumeSchedule] {
         (store.state?.resumes ?? [:]).values.filter {
-            $0.worktree == card.name && $0.status == "pending"
+            $0.worktree == card.key && $0.status == "pending"
         }
     }
 }

@@ -173,6 +173,18 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 // the surrounding quotes; esc() then makes the result safe as an HTML attribute
 // value. Emits its own quotes, so call it WITHOUT wrapping quotes: tipFocus(${escArg(n)}).
 const escArg = (s) => esc(JSON.stringify(String(s ?? "")));
+// The card key: "<node>/<worktree>" (ADR 0016) — the join between this page's
+// two payloads. /api/topology branches and /api/state cards each carry `node`
+// and a name; only the derived key joins them unambiguously once two machines
+// can hold same-named worktrees. Keep in lockstep with stream.js/index.html.
+const cardKey = (w) => w.node ? `${w.node}/${w.name}` : w.name;
+const branchKey = (b) => b.node ? `${b.node}/${b.worktree}` : b.worktree;
+let multiNode = false;
+const keyLabel = (k) => {
+  const s = String(k ?? ""); const cut = s.indexOf("/");
+  if (cut < 0) return s;
+  return multiNode ? `${s.slice(cut + 1)} ⌂${s.slice(0, cut)}` : s.slice(cut + 1);
+};
 // The client half of wire idempotency (orchestra/idem.py, ARCHITECTURE §5.6) —
 // the server's layer is opt-in per request, so a mutation without these headers
 // is a mutation a retry can run twice. Minted PER TAP, never from the payload;
@@ -231,7 +243,10 @@ function render() {
   const W = Math.max(900, $("viz").clientWidth);
   const now = topo.generated_at;
   byName = {}; lookup = {};
-  if (state) for (const w of state.worktrees) byName[w.name] = w;
+  multiNode = state ? Object.keys(state.nodes || {}).length > 1 : false;
+  // keyed by the card KEY — the topology join must never hand one machine's
+  // status to another machine's same-named worktree (ADR 0016)
+  if (state) for (const w of state.worktrees) byName[cardKey(w)] = w;
 
   // global log time scale, right edge = now
   let tmin = now - 6*3600;
@@ -267,9 +282,9 @@ function render() {
     const rowsEnd = [];
     const riderPlace = riders.map(b => {
       const rx = x(b.tip_ts);
-      const st = statusOf(byName[b.worktree]);
+      const st = statusOf(byName[branchKey(b)]);
       const info = `on trunk${b.behind ? ` · ↓${b.behind} behind tip` : " · at tip"}${b.dirty ? ` · Δ${b.dirty}` : ""}`;
-      const lw = Math.max(b.worktree.length * 6.6 + 12 + (st.word.length + 2) * 6,
+      const lw = Math.max(keyLabel(branchKey(b)).length * 6.6 + 12 + (st.word.length + 2) * 6,
                           info.length * 6) + 24;
       const x0 = rx > W - 300 ? rx - lw : rx;   // label spans [x0, x0+lw]
       let row = rowsEnd.findIndex(end => x0 >= end + 18);
@@ -312,8 +327,8 @@ function render() {
       // read back via dataset, which HTML-DECODES it — so a name with &<>"'
       // would look up a string the registry never stored. Key raw, escape only
       // for the attribute, and the decoded read lands back on the same string.
-      const key = `b:${b.worktree}`; lookup[key] = b;
-      const st = statusOf(byName[b.worktree]);
+      const key = `b:${branchKey(b)}`; lookup[key] = b;
+      const st = statusOf(byName[branchKey(b)]);
       const ly = top + TOP_PAD + i * LANE_H;
       const fx = x(b.fork_ts), txp = Math.max(x(b.tip_ts), fx + 2);
       const e = Math.max(6, Math.min(44, txp - fx));
@@ -334,7 +349,7 @@ function render() {
       inner += `<circle cx="${txp}" cy="${ly}" r="2.6" fill="${st.color}"/>`;
       const left = txp > W - 340;
       const lx = left ? txp - 14 : txp + 14, anchor = left ? "end" : "start";
-      inner += `<text x="${lx}" y="${ly-26}" text-anchor="${anchor}" font-size="12" font-weight="600" fill="${C.fg}">${esc(b.worktree)}  <tspan fill="${st.color}" font-size="10">${st.glyph} ${st.word}</tspan></text>`;
+      inner += `<text x="${lx}" y="${ly-26}" text-anchor="${anchor}" font-size="12" font-weight="600" fill="${C.fg}">${esc(keyLabel(branchKey(b)))}  <tspan fill="${st.color}" font-size="10">${st.glyph} ${st.word}</tspan></text>`;
       inner += `<text x="${lx}" y="${ly-12}" text-anchor="${anchor}" font-size="11" fill="${C.cyan}"> ${esc(b.branch)}</text>`;
       const stats = `+${b.ahead}${b.behind ? ` ↓${b.behind}` : ""}${b.dirty ? ` Δ${b.dirty}` : ""} · ${rel(now-b.tip_ts)} ago`;
       inner += `<text x="${lx}" y="${ly+18}" text-anchor="${anchor}" font-size="10" fill="${C.muted}">${esc(stats)}</text>`;
@@ -344,8 +359,8 @@ function render() {
 
     // riders: worktrees sitting directly on the trunk
     riders.forEach((b, i) => {
-      const key = `b:${b.worktree}`; lookup[key] = b;   // raw key; see branches above
-      const st = statusOf(byName[b.worktree]);
+      const key = `b:${branchKey(b)}`; lookup[key] = b;   // raw key; see branches above
+      const st = statusOf(byName[branchKey(b)]);
       const rx = x(b.tip_ts);
       const row = G.riderPlace[i];
       const lyy = trunkY + 28 + row * 32;
@@ -359,7 +374,7 @@ function render() {
       const left = rx > W - 300;
       const lx = left ? rx - 10 : rx + 10, anchor = left ? "end" : "start";
       const info = `on trunk${b.behind ? ` · ↓${b.behind} behind tip` : " · at tip"}${b.dirty ? ` · Δ${b.dirty}` : ""}`;
-      inner += `<text x="${lx}" y="${lyy}" text-anchor="${anchor}" font-size="11" font-weight="600" fill="${C.fg}">${esc(b.worktree)} <tspan fill="${st.color}" font-size="10">${st.glyph} ${st.word}</tspan></text>`;
+      inner += `<text x="${lx}" y="${lyy}" text-anchor="${anchor}" font-size="11" font-weight="600" fill="${C.fg}">${esc(keyLabel(branchKey(b)))} <tspan fill="${st.color}" font-size="10">${st.glyph} ${st.word}</tspan></text>`;
       inner += `<text x="${lx}" y="${lyy+13}" text-anchor="${anchor}" font-size="10" fill="${C.muted}">${esc(info)}</text>`;
       parts.push(`<g class="branchg hit" data-key="${esc(key)}">${inner}</g>`);
     });
@@ -370,9 +385,9 @@ function render() {
 
 // ---- tooltip & focus ------------------------------------------------------
 function tipHTML(b) {
-  const wt = byName[b.worktree], st = statusOf(wt);
+  const wt = byName[branchKey(b)], st = statusOf(wt);
   const now = topo.generated_at;
-  let h = `<div class="hd">${esc(b.worktree)} <span class="br"> ${esc(b.branch)}</span></div>`;
+  let h = `<div class="hd">${esc(keyLabel(branchKey(b)))} <span class="br"> ${esc(b.branch)}</span></div>`;
   h += `<div class="st" style="color:${st.color}">${st.glyph} ${st.word}</div>`;
   h += `<div class="mut"><span class="hash">${esc(b.hash)}</span> ${esc(b.subject)} <span class="dim">· ${rel(now-b.tip_ts)} ago</span></div>`;
   h += `<div class="mut mo">+${b.ahead} ahead · ↓${b.behind} behind ${esc("origin/main")} · Δ${b.dirty} uncommitted</div>`;
@@ -420,7 +435,7 @@ function unpinTip() {
 }
 async function tipFocus(wtName) {
   const wt = byName[wtName];
-  if (!wt || !wt.live_procs.length) { toast(`${wtName}: no live process to focus`); return; }
+  if (!wt || !wt.live_procs.length) { toast(`${keyLabel(wtName)}: no live process to focus`); return; }
   const p = wt.live_procs[0];
   const pid = p.pid;
   toast(`⌖ locating pid ${pid}…`);
@@ -442,7 +457,7 @@ async function tipFinish(btn, wtName) {
     return;
   }
   unpinTip();
-  toast(`✓ finishing ${wtName}…`);
+  toast(`✓ finishing ${keyLabel(wtName)}…`);
   try {
     const r = await fetch("/api/finish", { method: "POST",
       headers: idemHeaders(),
@@ -459,8 +474,8 @@ document.addEventListener("click", (ev) => {
   pinnedKey = g.dataset.key;
   const tip = $("tip");
   tip.innerHTML = tipHTML(b) + `<div class="tipacts">
-    <button onclick="tipFocus(${escArg(b.worktree)})">⌖ focus</button>
-    <button onclick="tipFinish(this, ${escArg(b.worktree)})"
+    <button onclick="tipFocus(${escArg(branchKey(b))})">⌖ focus</button>
+    <button onclick="tipFinish(this, ${escArg(branchKey(b))})"
       title="close out: agent lands the branch, terminal closes, node goes free">✓ finish</button>
     <button onclick="unpinTip()">✕</button></div>`;
   tip.classList.add("pinned");

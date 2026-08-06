@@ -228,7 +228,10 @@ public struct Endpoint: Sendable {
     /// merely "not required": `identity.resolve` treats a pid as a hint and
     /// cross-checks it against the session it names, so sending one can only ever
     /// turn a working request into `identity_gone`. `worktree` rides along as a
-    /// second assertion the server checks for free.
+    /// second assertion the server checks for free — the qualified card key
+    /// `<node>/<worktree>` since ADR 0016 (every acting route accepts it in this
+    /// existing parameter; a bare name still means "the board's own node", but
+    /// this client always sends the key).
     ///
     /// The deadline is 25 s because the osascript path has a 10 s subprocess
     /// timeout inside a `claude_processes()` scan that can itself take seconds.
@@ -247,7 +250,9 @@ public struct Endpoint: Sendable {
     /// guessing (*"pick a model and an effort first — routing is deterministic,
     /// nothing is chosen for you"*). `worktree` and `account` are optional and
     /// `nil` means "you pick" — the server's `_pick_defaults` is the only picker,
-    /// and the client does not mirror it.
+    /// and the client does not mirror it. A chosen `worktree` is the qualified
+    /// card key (the picker's values come from `free_worktrees`, which carries
+    /// keys since ADR 0016).
     ///
     /// Returns fast — the work runs on a background thread — so the deadline is
     /// short. It is the POLL that waits.
@@ -274,7 +279,9 @@ public struct Endpoint: Sendable {
                  timeout: 10, requiresToken: true)
     }
 
-    /// `POST /api/finish` — the closeout.
+    /// `POST /api/finish` — the closeout. `worktree` is the qualified card key;
+    /// the server's door splits it and hands the bare name to the unchanged
+    /// local path (NODES.md §4).
     ///
     /// **120 s**, and that is measured off the server's own worst case rather
     /// than chosen: `start_finish` runs `git fetch origin` (30 s timeout), a
@@ -289,8 +296,10 @@ public struct Endpoint: Sendable {
 
     /// `POST /api/resume/schedule` — arm or re-arm an auto-resume.
     ///
-    /// Keyed `"{worktree}|{sid}"` server-side, so this is the one mutation in the
-    /// app that is genuinely idempotent: arming twice replaces.
+    /// `worktree` is the qualified card key; the schedule comes back on
+    /// `/api/state.resumes` under `"<node>/<worktree>|{sid}"`. Keyed by
+    /// worktree+sid server-side, so this is the one mutation in the app that is
+    /// genuinely idempotent: arming twice replaces.
     ///
     /// Exactly one of `dueAt` (an absolute epoch the user picked) and
     /// `resetsAt` + `delayS` should be meaningful. Sending `resetsAt: nil` with

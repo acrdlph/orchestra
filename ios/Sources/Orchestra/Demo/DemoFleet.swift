@@ -33,32 +33,40 @@ import Foundation
 public enum DemoFleet {
     public static let hostname = "studio-mini"
     public static let user = "dev"
+    /// The demo's node id — the same one the server's own demo mode uses
+    /// (`observer.demo_state` merges through `merge_nodes({"starbase": …})`),
+    /// so the demo exercises the exact post-split wire: qualified card keys,
+    /// node-tagged cards, the `nodes` map (ADR 0016).
+    public static let node = "starbase"
 
     // The addresses a seam, a test, or the chat lookup needs to name. Session
-    // ids are the only thing in this app that addresses anything, so they are
-    // constants rather than strings copied into four files.
-    public static let needsAnswerWorktree = "search-index"
+    // ids and card KEYS are the things in this app that address anything, so
+    // they are constants rather than strings copied into four files. The
+    // `…Worktree` constants are qualified keys — what `FleetRoute`, the stores
+    // and the frame's `cards` dictionary all speak since ADR 0016.
+    public static let needsAnswerWorktree = "starbase/search-index"
     public static let needsAnswerAccount = "main"
     public static let needsAnswerSid = "9c1f4a2e-7b30-4c58-9a11-2d6e83f0b415"
     public static let blockedSid = "b430e7c9-51d2-4f8a-b6e3-70c95a1d8226"
     public static let workingSid = "4f6a1d08-9e77-42b1-a530-cc81f7b2e934"
     public static let waitingSid = "7d2e9105-6c48-4a3b-8e10-fd39b64c02a7"
     public static let limitSid = "a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2"
-    public static let limitWorktree = "release-notes"
-    public static let freeWorktree = "design-tokens"
+    public static let limitWorktree = "starbase/release-notes"
+    public static let freeWorktree = "starbase/design-tokens"
 
     /// The snapshot frame, decoded by the same call `FleetStore.runStream` makes.
     public static func frame(now: Date = Date()) throws -> StreamFrame {
         try StreamFrame.decode(DemoClock.rewrite(frameJSON, now: now))
     }
 
-    /// The three things no frame carries (`FleetSide`). `hostname` and `user` are
-    /// two strings; `resumes` is a real payload and is decoded like one, because
-    /// an armed auto-resume is one of the states the board is for.
+    /// The things no frame carries (`FleetSide`). `hostname`, `user` and the
+    /// board's own `node` are three strings; `resumes` is a real payload and is
+    /// decoded like one, because an armed auto-resume is one of the states the
+    /// board is for.
     public static func side(now: Date = Date()) throws -> FleetSide {
         let data = try DemoClock.rewrite(resumesJSON, now: now)
         let resumes = try JSONDecoder().decode([String: ResumeSchedule].self, from: data)
-        return FleetSide(hostname: hostname, user: user, resumes: resumes)
+        return FleetSide(hostname: hostname, user: user, node: node, resumes: resumes)
     }
 
     // MARK: - The payloads
@@ -72,11 +80,13 @@ public enum DemoFleet {
       "type": "snapshot",
       "v": 214,
       "at": 1799999998,
-      "order": ["search-index", "payments-webhook", "checkout-flow",
-                "api-gateway", "release-notes", "design-tokens"],
+      "order": ["starbase/search-index", "starbase/payments-webhook",
+                "starbase/checkout-flow", "starbase/api-gateway",
+                "starbase/release-notes", "starbase/design-tokens"],
       "cards": {
-        "search-index": {
+        "starbase/search-index": {
           "name": "search-index",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/search-index",
           "git": {
             "branch": "perf/incremental-reindex",
@@ -155,8 +165,9 @@ public enum DemoFleet {
           "availability": "attention"
         },
 
-        "payments-webhook": {
+        "starbase/payments-webhook": {
           "name": "payments-webhook",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/payments-webhook",
           "git": {
             "branch": "fix/webhook-retries",
@@ -211,8 +222,9 @@ public enum DemoFleet {
           "availability": "attention"
         },
 
-        "checkout-flow": {
+        "starbase/checkout-flow": {
           "name": "checkout-flow",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/checkout-flow",
           "git": {
             "branch": "feat/guest-checkout",
@@ -290,8 +302,9 @@ public enum DemoFleet {
           "availability": "busy"
         },
 
-        "api-gateway": {
+        "starbase/api-gateway": {
           "name": "api-gateway",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/api-gateway",
           "git": {
             "branch": "chore/rate-limit-headers",
@@ -345,8 +358,9 @@ public enum DemoFleet {
           "availability": "attention"
         },
 
-        "release-notes": {
+        "starbase/release-notes": {
           "name": "release-notes",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/release-notes",
           "git": {
             "branch": "docs/release-1-4",
@@ -405,8 +419,9 @@ public enum DemoFleet {
           "availability": "waiting"
         },
 
-        "design-tokens": {
+        "starbase/design-tokens": {
           "name": "design-tokens",
+          "node": "starbase",
           "path": "/Users/dev/code/storefront/design-tokens",
           "git": {
             "branch": "design/token-pass",
@@ -462,9 +477,17 @@ public enum DemoFleet {
           "etime": "02:41:12",
           "tty": null,
           "host": "Terminal",
-          "cwd": "/Users/dev/code/scratch"
+          "cwd": "/Users/dev/code/scratch",
+          "node": "starbase"
         }
       ],
+      "nodes": {
+        "starbase": {
+          "label": "studio-mini",
+          "hostname": "studio-mini",
+          "user": "dev"
+        }
+      },
       "freshness": {
         "worktrees": 1799999997,
         "procs": 1799999998,
@@ -474,9 +497,10 @@ public enum DemoFleet {
     }
     """#
 
-    /// `/api/state.resumes` — keyed `"{worktree}|{sid}"` with a literal pipe
-    /// (`resume.py:68`). One armed resume, on the limited card, due a minute
-    /// after that account's weekly limit resets.
+    /// `/api/state.resumes` — keyed `"<node>/<worktree>|{sid}"` with a literal
+    /// pipe (`resume_public` qualifies both the key and the record's `worktree`
+    /// at the server's door). One armed resume, on the limited card, due a
+    /// minute after that account's weekly limit resets.
     ///
     /// `message` is **null**, which is an ordinary wire state and the right one
     /// here: `ResumeSheet` renders a non-null message through `ServerSays` with
@@ -484,8 +508,8 @@ public enum DemoFleet {
     /// something that happened. Nothing in the demo may read as a receipt.
     static let resumesJSON = #"""
     {
-      "release-notes|a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2": {
-        "worktree": "release-notes",
+      "starbase/release-notes|a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2": {
+        "worktree": "starbase/release-notes",
         "sid": "a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2",
         "account": "spare",
         "model": "opus",

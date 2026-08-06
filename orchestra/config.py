@@ -29,6 +29,26 @@ HERE = Path(__file__).resolve().parent.parent  # package lives one level under t
 CFG = {
     "host": "127.0.0.1",       # keep loopback: the board serves transcript text
     "port": 4242,
+    # This collector's node id (ADR 0016, docs/mobile/NODES.md). Empty means
+    # use — or mint and persist — the id in node.json beside this package.
+    # Setting it overrides both and writes nothing. It keys every card as
+    # "<node>/<worktree>", so it must match node.NODE_RE (lowercase letters,
+    # digits, '-'); a value that does not refuses at startup.
+    "node": "",
+    # Collector mode (ADR 0016 Phase 1, NODES.md §11): `--collect-to URL`
+    # starts a watcher that DIALS OUT and posts node snapshots to that board —
+    # no listener of any kind on this machine, which is the security property
+    # the whole design hangs on. The token is an ordinary device token minted
+    # on the board (`--add-device`); it lives here rather than on argv so it
+    # cannot leak through `ps`. The heartbeat re-posts an unchanged snapshot
+    # so the board's node freshness advances — node-down detection is only as
+    # honest as the cadence of proof-of-life.
+    "collect_token": "",
+    "collect_heartbeat_s": 15.0,
+    # The ingest route's own body cap, like the uploads route's (server.py):
+    # a snapshot is ~38 KB on a nine-worktree fleet, and the global 256 KB cap
+    # would silently strand a fifty-worktree machine.
+    "node_snapshot_max_mb": 1.0,
     "roots": [str(Path.cwd())],  # dirs whose git-repo children are watched
     "pattern": "",             # optional regex filter on worktree dir names
     "homes": [],               # Claude home dirs; [] = auto-discover ~/.claude*
@@ -460,6 +480,16 @@ def load_config(argv=None):
                          "kqueue cannot see, and 3.0 on a platform with no "
                          "watcher")
     ap.add_argument("--config", metavar="FILE", help="path to a orchestra.config.json")
+    # Collector mode (ADR 0016 Phase 1). A URL and not a flag-plus-key so the
+    # invocation reads as what it does: this machine watches itself and posts
+    # what it sees to that board. It starts NO listener — the one property a
+    # managed work machine cares about — and the token comes from the config
+    # file ("collect_token"), never from argv, where `ps` would print it.
+    ap.add_argument("--collect-to", metavar="URL",
+                    help="run as a read-only collector: watch this machine's "
+                         "roots and POST node snapshots to the board at URL "
+                         "(e.g. http://100.x.y.z:4242). Opens no port here; "
+                         "requires \"collect_token\" in the config file")
     # Device administration. Flags rather than a route, because the admin
     # surface of API.md §2.5 is the one thing a stolen phone must never be able
     # to reach — a device that could revoke devices could revoke the Mac's

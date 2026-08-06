@@ -920,6 +920,17 @@ must early-return before `do_GET`'s unconditional `Content-Length` tail (orchest
 }
 ```
 
+> **ADR 0016 Phase 0 (2026-08-06):** on the wire as built, every single string that names a
+> card is the qualified key `<node>/<worktree>`, never the bare name — `order` entries,
+> `free_worktrees`, frame card keys, the keys of `resumes` (`"<node>/<worktree>|<sid>"`),
+> and the `wt` of any transition or push payload — and every frame carries a `nodes` map
+> (`{id: {label, hostname, user}}`), a fourth bump term riding whole, naming every machine
+> those keys reference. The bare names in this sketch (and in I11/I18/I19 below) read as the
+> single-node special case. [`NODES.md`](NODES.md) §3 is the rule; nothing about this
+> document's freshness semantics moved with it — per-node recency is Phase 1, on the
+> no-bump `freshness` path, exactly because a quiet node must date its cards, not spin the
+> version.
+
 Rules, each of which exists because something breaks without it:
 
 - **`order`, `counts`, `free_worktrees`, `generated_at` ship on EVERY frame** (166 B total). The
@@ -1295,7 +1306,7 @@ how the push path preserves it.
 | I15 | **Every state-changing action has a deterministic confirmation path.** | `▶ resume` disables on click; re-enables on the observed state change or a 3 s timeout that marks it failed. Actions call `COLLECTOR.poke()`. | click `▶ resume now`; assert disabled before the fetch settles, and a second synthetic click issues no second `/api/send` |
 | I16 | **Optimistic values are visually distinct from confirmed ones.** | the chat echo gets `.msg.you.pending`, cleared on confirmation, marked failed rather than silently vanishing | make `/api/send` reject; assert the bubble carries a failure marker and survives the next `loadChatMsgs` |
 | I17 | **At most one render per animation frame.** `stampMoves` does N `getBoundingClientRect()`; `flipReorder` 2N more. | rAF dirty flag | deliver 100 deltas synchronously; assert `render` ran at most once |
-| I18 | **The card key is unique.** `discover_worktrees` dedupes on path, not name, so two roots each containing `api/` collapse to one card and collide in `REG`. | the snapshot ships a stable `key` (the worktree path); `dataset.wt` becomes the key | serve two worktrees named `api` from different roots; assert `grid.children.length === 2` |
+| I18 | **The card key is unique.** `discover_worktrees` dedupes on path, not name, so two roots each containing `api/` collapse to one card and collide in `REG`. | the snapshot ships a stable `key` (the worktree path); `dataset.wt` becomes the key. *Superseded by ADR 0016 Phase 0: the shipped key is `<node>/<worktree>`, not the path — it separates two machines' same-named cards; the two-roots-one-machine collapse remains, same standing (NODES.md §2)* | serve two worktrees named `api` from different roots; assert `grid.children.length === 2` |
 | I19 | **`REG` must not outlive its sessions.** L419–421 accumulates and never prunes, so `resumeBody()` can POST a long-expired `resets_at`. | rebuilt from `lastState` on each render | render A with session S, then B without S; assert `REG['wt|S']` is undefined |
 | I20 | **Job pollers stay request/response.** `pollDispatch` (1 s) and `pollFinishJob` (1.5 s) are job-scoped and are not folded into the board stream. | untouched | kill the state stream mid-dispatch; assert `.proglive` lines still advance |
 | I21 | **Zero dependencies, zero external runtime fetches on the data path.** | `fetch` + `EventSource`, both built in | grep for new `src="http` / `import` beyond the existing font link |
