@@ -239,10 +239,26 @@ final class AppModel {
     /// the same call the editor makes on every keystroke. It is a way to press
     /// the key, not a second way to hold a draft.
     private func seedDraftFromLaunchEnvironment() {
-        guard let text = ProcessInfo.processInfo.environment["ORC_MISSION"],
-              !text.isEmpty else { return }
-        drafts.setMission(text)
-        drafts.flush()
+        let env = ProcessInfo.processInfo.environment
+        if let text = env["ORC_MISSION"], !text.isEmpty {
+            drafts.setMission(text)
+            drafts.flush()
+        }
+        // `ORC_CHAT=<text>` puts text in the CHAT composer for whichever session
+        // `ORC_SCREEN=chat:…` is about to open, through the same
+        // `DraftStore.setChatDraft` the field calls on every keystroke.
+        //
+        // **It runs exactly once, here, on the launch that carried it** — and not
+        // in `ChatView`, which is the whole point. The defect being verified is
+        // "the field survives the view being destroyed and rebuilt", so a seam
+        // that re-seeded on every appear would paint the restore it is supposed
+        // to be proving. Seeded once at launch, everything after — the lock, the
+        // background, a cold relaunch with no seed at all — is the real path.
+        if let text = env["ORC_CHAT"], !text.isEmpty,
+           case .chat(_, _, let sid)? = DebugRoute.fromEnvironment() {
+            drafts.setChatDraft(text, for: sid)
+            drafts.flushChat()
+        }
     }
     #endif
 

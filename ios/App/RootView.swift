@@ -233,6 +233,15 @@ struct RootView: View {
             }
         }
         .tint(Palette.statusFree)
+        // **The drafts, one write, for the whole gated subtree.** The mission
+        // composer is handed the store by hand because `FleetView` presents it;
+        // the CHAT composer is two pushes down and is presented from two
+        // different screens, neither of which is a composition root. The store
+        // is still owned by `AppModel` and still constructed exactly once — this
+        // is delivery, not a second owner. It has to be *outside* whatever the
+        // gate tears down, and it is: the environment write lives on the paired
+        // tabs, and `AppModel` outlives them.
+        .environment(model.drafts)
         // Here rather than in `AppModel.start()`, because pairing can happen
         // AFTER launch: this view appears the moment a token exists, and that is
         // the moment the stream should open.

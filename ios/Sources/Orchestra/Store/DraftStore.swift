@@ -71,6 +71,108 @@ public struct MissionDraft: Codable, Sendable, Equatable {
     }
 }
 
+/// One session's half-written reply, as it is written to disk.
+///
+/// `savedAt` is **last-touched**, not first-typed: it is the LRU key and the age
+/// the retention window is measured from, so it moves on every keystroke that
+/// changes the text.
+public struct ChatDraft: Codable, Sendable, Equatable {
+    public var text: String
+    public var savedAt: Date
+
+    public init(text: String, savedAt: Date) {
+        self.text = text
+        self.savedAt = savedAt
+    }
+
+    /// Whitespace is not content — a composer holding three spaces is empty, and
+    /// an empty draft is not kept.
+    public var isEmpty: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// Every kept chat draft, and the two rules that stop them accumulating.
+///
+/// **Keyed by `sid` alone.** A sid is the CLI session's own UUID — the fleet
+/// payload carries it as `"sid": "9c1f4a2e-7b30-4c58-9a11-2d6e83f0b415"`,
+/// `DebugRoute` parses it as "a UUID with dashes", and the branch that renders a
+/// conversation is `FleetRoute.chat(worktree:account:sid:)`. Two accounts cannot
+/// mint the same v4 UUID, so account and worktree add nothing to the key — and
+/// leaving them out is what makes the *same* conversation share one draft whether
+/// it was reached from the board or from the worktree screen, which is the
+/// behaviour a user expects from one conversation. Actuation still addresses a
+/// send by `(account, sid)` because the SERVER resolves a process that way
+/// (ADR 0008); that is a different question from which text belongs to which
+/// screen.
+///
+/// **Bounded twice**, because `UserDefaults` is not a database and a fleet churns
+/// through sessions: at most `maxKept` drafts, LRU by last-touched, and nothing
+/// older than `lifetime`. Everything here is a pure function over the value, so
+/// both bounds are driven from a test with literals and no clock.
+public struct ChatDrafts: Codable, Sendable, Equatable {
+    /// How many sessions' drafts are kept at once. Twenty is comfortably more
+    /// than the number of live sessions this fleet has ever shown at once (the
+    /// board's own busiest day is single digits), so the cap is a backstop
+    /// against unbounded growth rather than something a user can feel.
+    public static let maxKept = 20
+    /// How long an untouched draft is kept. A week: long enough that "I typed
+    /// it, got pulled away, came back tomorrow" always works, short enough that
+    /// a phone is not still holding a half-written reply to an agent that
+    /// finished a month ago.
+    public static let lifetime: TimeInterval = 7 * 24 * 60 * 60
+
+    public var bySession: [String: ChatDraft]
+
+    public init(bySession: [String: ChatDraft] = [:]) {
+        self.bySession = bySession
+    }
+
+    public func text(for sid: String) -> String { bySession[sid]?.text ?? "" }
+
+    /// Put text in, then re-apply both bounds. Empty text **removes** the entry:
+    /// a sent message must not leave a tombstone behind, and an empty draft is
+    /// not a draft.
+    public func setting(_ text: String, for sid: String, now: Date,
+                        max: Int = maxKept, lifetime: TimeInterval = lifetime) -> ChatDrafts {
+        var copy = self
+        let draft = ChatDraft(text: text, savedAt: now)
+        if draft.isEmpty {
+            copy.bySession.removeValue(forKey: sid)
+        } else {
+            copy.bySession[sid] = draft
+        }
+        return copy.pruned(now: now, max: max, lifetime: lifetime)
+    }
+
+    public func clearing(_ sid: String) -> ChatDrafts {
+        var copy = self
+        copy.bySession.removeValue(forKey: sid)
+        return copy
+    }
+
+    /// Drop the empty, drop the stale, then keep the `max` most recently
+    /// touched. Ties break on the key so the result is deterministic — a rule
+    /// that evicts a different draft on every run is a rule nobody can test.
+    public func pruned(now: Date, max: Int = maxKept,
+                       lifetime: TimeInterval = lifetime) -> ChatDrafts {
+        var kept = bySession.filter { _, draft in
+            !draft.isEmpty && now.timeIntervalSince(draft.savedAt) < lifetime
+        }
+        guard kept.count > max else { return ChatDrafts(bySession: kept) }
+        let doomed = kept
+            .sorted { lhs, rhs in
+                lhs.value.savedAt == rhs.value.savedAt
+                    ? lhs.key > rhs.key
+                    : lhs.value.savedAt > rhs.value.savedAt
+            }
+            .dropFirst(max)
+            .map(\.key)
+        for key in doomed { kept.removeValue(forKey: key) }
+        return ChatDrafts(bySession: kept)
+    }
+}
+
 /// The mission draft, persisted — `UX.md` §3.5's *"draft persists on a 500 ms
 /// debounce; survives app kill and failed launch"*, which was listed as an open
 /// item in `ios/README.md` and in `docs/mobile/PRODUCTION-READINESS.md` until now.
@@ -97,6 +199,14 @@ public struct MissionDraft: Codable, Sendable, Equatable {
 /// is updated synchronously — that is what the editor renders — and the write is
 /// coalesced behind a 500 ms timer, then **flushed immediately on background** so
 /// nothing is lost to a kill iOS never warns about.
+///
+/// **It holds the chat composer's text too, and for exactly the same reason.**
+/// `ChatView` is a pushed destination inside the gated subtree, so the lock takes
+/// its `@State private var draft` the same way it took the mission — a user who
+/// left the app to grant a dictation app permission came back to an empty field.
+/// Same store, same debounce, same background flush; the only differences are
+/// that chat drafts are keyed by `sid` (see `ChatDrafts`) and that there is no
+/// re-present question to answer, because a pushed screen is where you left it.
 @MainActor
 @Observable
 public final class DraftStore {
@@ -109,6 +219,10 @@ public final class DraftStore {
     /// The one key. A single JSON blob rather than six keys, so a draft can
     /// never be half-written: the read either finds a whole draft or none.
     public static let storageKey = "sh.orchestra.mission-draft"
+    /// The chat drafts, also one blob — a key per session would leave a key per
+    /// dead session behind, which is the unbounded growth `ChatDrafts` exists to
+    /// prevent. One blob means eviction actually removes something.
+    public static let chatStorageKey = "sh.orchestra.chat-drafts"
 
     public private(set) var mission: String = ""
     public private(set) var worktree: String?
@@ -126,11 +240,22 @@ public final class DraftStore {
     /// Writes actually made to `UserDefaults`. Diagnostic, and the thing a test
     /// asserts on to prove the debounce **coalesces** rather than merely delays.
     public private(set) var writes = 0
+    /// The same count for the chat blob, kept separate so neither composer's
+    /// debounce can be proved by the other one's traffic.
+    public private(set) var chatWrites = 0
 
     private let defaults: UserDefaults
     private let debounce: Duration
     private var savedAt: Date
     private var pending: Task<Void, Never>?
+    /// Every session's half-written reply. Pruned on load, and again on every
+    /// edit, so the bound holds no matter which end it is pushed from.
+    private var chats: ChatDrafts
+    private var pendingChat: Task<Void, Never>?
+    /// Whether the in-memory chat map differs from what is on disk. It gates the
+    /// write so that `flush()` — which the mission composer calls on every picker
+    /// choice — does not re-encode the chat blob for nothing.
+    private var chatDirty = false
 
     /// `now` is injected so the 24 h window can be driven in a test without a
     /// test that waits 24 hours.
@@ -150,6 +275,13 @@ public final class DraftStore {
         // The only place the restore rule is applied to a COLD launch. An
         // expired or empty draft keeps its text and loses its sheet.
         self.isComposerOpen = stored.shouldRepresentComposer(now: now)
+        // Chat drafts are pruned as they are read, so a phone that was off for a
+        // fortnight comes back holding nothing rather than holding everything.
+        // The clean-up is written down lazily — the next edit or flush carries
+        // it — because a launch is not a reason to touch the disk.
+        let storedChats = Self.loadChats(from: defaults) ?? ChatDrafts()
+        self.chats = storedChats.pruned(now: now)
+        self.chatDirty = self.chats != storedChats
     }
 
     // MARK: - reading
@@ -164,6 +296,14 @@ public final class DraftStore {
     /// Is there anything here worth keeping? Drives the `discard draft`
     /// affordance, which is shown only when there is a draft to discard.
     public var hasContent: Bool { !draft.isEmpty }
+
+    /// Every kept chat draft. Read by tests and by nothing else — a screen only
+    /// ever wants its own session's text.
+    public var chatDrafts: ChatDrafts { chats }
+
+    /// This session's half-written reply, or `""`. Never nil: the composer wants
+    /// a String and "no draft" and "an empty draft" are the same thing to it.
+    public func chatDraft(for sid: String) -> String { chats.text(for: sid) }
 
     public func value(for field: Field) -> String? {
         switch field {
@@ -181,6 +321,28 @@ public final class DraftStore {
         guard text != mission else { return }
         mission = text
         scheduleSave()
+    }
+
+    /// One session's composer, on every keystroke. Same shape as `setMission`:
+    /// in memory now, on disk in 500 ms, on disk **immediately** if the app
+    /// backgrounds first.
+    public func setChatDraft(_ text: String, for sid: String, now: Date = Date()) {
+        guard text != chats.text(for: sid) else { return }
+        chats = chats.setting(text, for: sid, now: now)
+        chatDirty = true
+        scheduleChatSave()
+    }
+
+    /// **The message left the phone.** Called from exactly one place — the send
+    /// path, and only on the outcome that proves the keystrokes were accepted
+    /// (`Outgoing.State.didLeave`). A refusal, an ambiguous send and a lost one
+    /// all keep the draft, because at that point the composer holds the only
+    /// copy of what the user wrote.
+    public func clearChatDraft(for sid: String) {
+        guard chats.bySession[sid] != nil else { return }
+        chats = chats.clearing(sid)
+        chatDirty = true
+        flushChat()
     }
 
     /// One of the four pickers. Discrete and rare, so it is written at once
@@ -222,6 +384,32 @@ public final class DraftStore {
         flush()
     }
 
+    /// Put a dispatch's own copy of the draft back, but **only into an empty
+    /// composer**.
+    ///
+    /// `clear()` runs the moment a job id comes back, which is right — this
+    /// server has no idempotency key and text that reappeared afterwards would
+    /// invite a double-fire. The cost of it is that a run which started and then
+    /// FAILED leaves "Back to the draft" pointing at an empty editor, with the
+    /// mission lost to a launch that did not work. `ActionsStore.DispatchRun`
+    /// kept every field the composer sent it, so that is what comes back.
+    ///
+    /// The guard is the whole rule: a draft the user has already started typing
+    /// again outranks the record of the one before it, and a refusal (which never
+    /// cleared anything, because a refusal has no job) is a no-op here.
+    @discardableResult
+    public func restoreIfEmpty(mission: String, worktree: String?, account: String?,
+                               model: String?, effort: String?) -> Bool {
+        guard !hasContent else { return false }
+        self.mission = mission
+        self.worktree = worktree
+        self.account = account
+        self.model = model
+        self.effort = effort
+        flush()
+        return true
+    }
+
     // MARK: - lifecycle
 
     /// The app is going to the background. Write **now** — a suspended app can
@@ -255,11 +443,31 @@ public final class DraftStore {
         }
     }
 
-    /// Write whatever is in hand, now, cancelling any pending debounce.
+    private func scheduleChatSave() {
+        pendingChat?.cancel()
+        pendingChat = Task { [weak self, debounce = self.debounce] in
+            try? await Task.sleep(for: debounce)
+            guard !Task.isCancelled else { return }
+            self?.persistChats()
+        }
+    }
+
+    /// Write whatever is in hand, now, cancelling any pending debounce. Both
+    /// composers: `flushForBackground` goes through here, and the app has one
+    /// chance to write before iOS suspends it.
     public func flush(at now: Date = Date()) {
         pending?.cancel()
         pending = nil
         persist(at: now)
+        flushChat()
+    }
+
+    /// The chat half on its own, for the two callers that only touched a chat
+    /// draft and have no reason to re-encode the mission.
+    public func flushChat() {
+        pendingChat?.cancel()
+        pendingChat = nil
+        persistChats()
     }
 
     private func persist(at now: Date) {
@@ -273,8 +481,25 @@ public final class DraftStore {
         defaults.set(data, forKey: Self.storageKey)
     }
 
+    /// Write the chat blob **only if it changed**. `flush()` is called on every
+    /// picker choice in the mission composer; without this gate a user who never
+    /// opened a chat would still pay an encode-and-write per tap.
+    private func persistChats() {
+        pendingChat = nil
+        guard chatDirty else { return }
+        chatDirty = false
+        chatWrites += 1
+        guard let data = try? JSONEncoder().encode(chats) else { return }
+        defaults.set(data, forKey: Self.chatStorageKey)
+    }
+
     private static func load(from defaults: UserDefaults) -> MissionDraft? {
         guard let data = defaults.data(forKey: storageKey) else { return nil }
         return try? JSONDecoder().decode(MissionDraft.self, from: data)
+    }
+
+    private static func loadChats(from defaults: UserDefaults) -> ChatDrafts? {
+        guard let data = defaults.data(forKey: chatStorageKey) else { return nil }
+        return try? JSONDecoder().decode(ChatDrafts.self, from: data)
     }
 }

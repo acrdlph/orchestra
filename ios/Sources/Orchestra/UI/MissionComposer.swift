@@ -66,7 +66,18 @@ public struct MissionComposer: View {
         self.initialPicker = initialPicker
     }
 
-    private var run: ActionsStore.DispatchRun? { actions.dispatch }
+    private var run: ActionsStore.DispatchRun? {
+        #if DEBUG
+        return actions.dispatch ?? debugRun
+        #else
+        return actions.dispatch
+        #endif
+    }
+
+    /// Cancel + Launch, or Close, or neither — decided by the phase and by
+    /// nothing else. The rule itself is in `Rules/ComposerChrome.swift`, where a
+    /// test can reach it.
+    private var toolbar: ComposerToolbar { ComposerToolbar.forPhase(run?.phase) }
 
     // The draft, read and written through the store. There is deliberately no
     // local mirror: a second copy is a second thing the lock can delete.
@@ -84,6 +95,7 @@ public struct MissionComposer: View {
                         actions.clearDispatch()
                         dismiss()
                     } reopenDraft: {
+                        restoreDraft(from: run)
                         actions.clearDispatch()
                     }
                 } else {
@@ -93,15 +105,23 @@ public struct MissionComposer: View {
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(run == nil ? "New mission" : "Launching")
             .navigationBarTitleDisplayMode(.inline)
+            // **The toolbar is a function of the run, not a constant.** It used
+            // to be neither: Cancel and Launch stayed up through the whole
+            // dispatch, where Launch could never fire again and Cancel could not
+            // do what its name says. See `ComposerToolbar`.
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .foregroundStyle(Palette.textSecondary)
+                if let title = toolbar.leadingTitle {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(title) { dismiss() }
+                            .foregroundStyle(Palette.textSecondary)
+                    }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Launch") { confirming = true }
-                        .foregroundStyle(canLaunch ? Palette.statusNeeds : Palette.textDisabled)
-                        .disabled(!canLaunch)
+                if toolbar.showsLaunch {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Launch") { confirming = true }
+                            .foregroundStyle(canLaunch ? Palette.statusNeeds : Palette.textDisabled)
+                            .disabled(!canLaunch)
+                    }
                 }
             }
             .task {
@@ -200,6 +220,15 @@ public struct MissionComposer: View {
         if model == nil { return "pick a model" }
         if effort == nil { return "pick an effort" }
         return nil
+    }
+
+    /// **"Back to the draft" has to land on a draft.** The run kept its own copy
+    /// of everything this composer sent it, and an editor emptied by a launch
+    /// that then failed gets it back. The rule — and its one guard — is
+    /// `DraftStore.restoreIfEmpty`.
+    private func restoreDraft(from run: ActionsStore.DispatchRun) {
+        drafts.restoreIfEmpty(mission: run.mission, worktree: run.worktree,
+                              account: run.account, model: run.model, effort: run.effort)
     }
 
     private var chosenAccountLimits: AccountLimits? {
@@ -388,6 +417,65 @@ public struct MissionComposer: View {
         .accessibilityHint("Double tap to choose")
     }
 }
+
+#if DEBUG
+extension MissionComposer {
+    /// `ORC_DISPATCH=launching|running|finished|failed|refused|lost` renders the
+    /// **Launching** screen for a run that does not exist.
+    ///
+    /// It is the same kind of seam as `ORC_SCREEN` and `ORC_MISSION`, with one
+    /// honest difference worth stating: those press a button, and this one does
+    /// not — there is no button to press. Reaching this screen for real means
+    /// spending an account's usage and starting an agent on somebody's Mac, and
+    /// the demo fleet cannot reach it either (`canLaunch` is false in demo, and
+    /// `ActionsStore.launch` answers `.refused` there by design). So the phase is
+    /// injected, and everything downstream of it — the title, the toolbar rule,
+    /// the body, the copy — is the real code reading a real `DispatchRun`.
+    ///
+    /// `actions.dispatch` always wins, so a real launch is never shadowed.
+    var debugRun: ActionsStore.DispatchRun? {
+        guard let raw = ProcessInfo.processInfo.environment["ORC_DISPATCH"]?.lowercased(),
+              !raw.isEmpty else { return nil }
+        let phase: ActionsStore.DispatchRun.Phase
+        switch raw {
+        case "launching":
+            phase = .launching
+        case "running":
+            phase = .running
+        case "finished":
+            phase = .finished(DispatchResult(
+                ok: true, message: "started mission-searchindex-214849 in search-index",
+                session: "mission-searchindex-214849", worktree: "search-index",
+                account: "main", model: model ?? "opus", effort: effort ?? "max",
+                effortConfirmed: true, kickoffSent: true,
+                attach: "tmux -L fleet attach -t mission-searchindex-214849"))
+        case "failed":
+            phase = .finished(DispatchResult(
+                ok: false, message: "the pane died before the brief was typed"))
+        case "refused":
+            phase = .refused(DispatchRefusal(
+                message: "pick a model and an effort first — routing is "
+                    + "deterministic, nothing is chosen for you"))
+        case "lost":
+            phase = .lost("no answer in 90 s — the mission may be running")
+        default:
+            return nil
+        }
+        let job: String? = raw == "launching" ? nil : "d-8f21c4"
+        return ActionsStore.DispatchRun(
+            key: "orc-dispatch-seam", job: job, phase: phase,
+            progress: raw == "launching" ? [] : [
+                "① reserving search-index",
+                "② starting tmux session mission-searchindex-214849",
+                "  claude --dangerously-skip-permissions",
+                "③ waiting for the prompt",
+            ],
+            startedAt: Date().addingTimeInterval(-9),
+            mission: mission, worktree: worktree, account: account,
+            model: model ?? "opus", effort: effort ?? "max")
+    }
+}
+#endif
 
 /// Which of the composer's four rows a picker belongs to. `Identifiable` because
 /// one `.sheet(item:)` serves all four — four booleans would be four ways to
@@ -582,17 +670,31 @@ struct DispatchProgressView: View {
         }
     }
 
+    /// What the toolbar's **Close** does not do, said once, where it is being
+    /// read. The screen used to offer a button called Cancel here, which reads as
+    /// "stop this" — and there is nothing on this phone that stops a mission:
+    /// `/api/kill` does not exist, so the honest thing is to say so and name the
+    /// one thing that does work.
+    private var noStopping: some View {
+        Text("Closing this doesn't stop the mission, and nothing on this phone "
+             + "can — there is no kill switch on the server. Attach on the Mac.")
+            .font(OrcFont.meta)
+            .foregroundStyle(Palette.statusLimit)
+    }
+
     @ViewBuilder
     private func body(for phase: ActionsStore.DispatchRun.Phase) -> some View {
         switch phase {
         case .launching:
             HonestProgress(since: run.startedAt, caption: "asking the server")
+            noStopping
         case .running:
             HonestProgress(since: run.startedAt, caption: "launching")
             Text("Typically 10–20 s: a tmux session, then claude boots, then the "
                  + "effort command, then the brief.")
                 .font(OrcFont.meta)
                 .foregroundStyle(Palette.textTertiary)
+            noStopping
         case .finished(let result):
             ServerSays(result.text, tone: result.ok ? .ok : .refusal)
             if result.ok {

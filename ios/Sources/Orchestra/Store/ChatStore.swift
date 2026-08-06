@@ -62,6 +62,29 @@ public struct Outgoing: Sendable, Equatable, Identifiable {
     }
 }
 
+public extension Outgoing.State {
+    /// **Did this text actually leave the phone?**
+    ///
+    /// The one question the composer's draft turns on. `typed` is `rc == 0` from
+    /// `send_to_process` — the keystrokes were accepted by a real tty — and
+    /// `inTranscript` is that plus a sighting. Everything else keeps the draft:
+    ///
+    /// * `refused` — the server said no. The text never went anywhere and the
+    ///   composer is the only place it still exists.
+    /// * `ambiguous` / `lost` — it MAY have half-landed. Clearing here would be
+    ///   the app deciding, on no evidence, that a user's paragraph is disposable;
+    ///   a duplicate is a nuisance, a deleted message is gone. The outgoing
+    ///   bubble carries the warning, and the bubble dies with the screen — the
+    ///   draft is what survives the lock.
+    /// * `sending` — not settled yet; nothing is proved.
+    var didLeave: Bool {
+        switch self {
+        case .typed, .inTranscript: true
+        case .sending, .refused, .ambiguous, .lost: false
+        }
+    }
+}
+
 /// One session's conversation, and the one place in this app that types at an
 /// agent.
 ///
@@ -284,7 +307,18 @@ public final class ChatStore {
             // user turn to the transcript within a second or two.
             update(item)
             await load()
-            return outbox.last?.state
+            // **Read back by id, and treat a MISSING bubble as the best
+            // outcome.** `load()` runs `sightOutgoing`, which removes a bubble
+            // the moment the turn it describes appears in the transcript — so
+            // the strongest possible result used to leave `outbox.last` nil (or,
+            // worse, holding somebody else's send) and this function returned
+            // `nil`, the same value it returns when it refuses to send at all.
+            // The caller's rule is "clear the draft only if it left"; that
+            // collision would have kept the draft on every successful send.
+            guard let current = outbox.first(where: { $0.id == item.id }) else {
+                return .inTranscript(reply.text)
+            }
+            return current.state
         case .refused:
             item.state = .refused(reply.text)
         case .ambiguous(let why):
