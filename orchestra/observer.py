@@ -139,9 +139,25 @@ def collect_state(fresh=None, git=None, cold=False, settle=None, hooks=None):
     rank = {"needs_input": 0, "limit": 1, "blocked": 2, "working": 3, "waiting": 4, "ended": 5}
     for ss in sessions.values():
         for s in ss:
-            if s["status"] not in ("needs_input", "blocked", "waiting"):
+            # **A session that just said it hit its limit looks BUSY, and that is
+            # the trap.** `working` means "the transcript was written inside the
+            # last 90 s" — and writing *"You've hit your session limit · resets
+            # 1:30pm"* is a write. So the very act of announcing the limit made
+            # the session ineligible for the join below, and for those 90 s the
+            # board showed `● WORKING` for an agent that was parked and could not
+            # move. Found on the real fleet: eight sessions whose last words were
+            # that notice, some of them reading as working.
+            #
+            # The cclimits branches keep the original guard, deliberately — that
+            # data is a 5-minute cache, and letting it relabel a session that is
+            # genuinely writing would invert the error the day a limit resets and
+            # the agent carries on before the cache notices. The TRANSCRIPT
+            # notice has no such problem: it is the session's own newest words.
+            said_limit = bool(limit_re.search(s["last_assistant"] or ""))
+            joinable = s["status"] in ("needs_input", "blocked", "waiting")
+            if not joinable and not (said_limit and s["status"] == "working"):
                 continue
-            al = acct_limits.get(s["account"])
+            al = acct_limits.get(s["account"]) if joinable else None
             smodel = (s["model"] or "").lower()
             lim = None
             if al and al["exhausted"]:
@@ -161,9 +177,10 @@ def collect_state(fresh=None, git=None, cold=False, settle=None, hooks=None):
             if lim:
                 s["status"] = "limit"
                 s["limit"] = lim
-            elif limit_re.search(s["last_assistant"] or ""):
-                # the CLI wrote its limit notice into the transcript —
-                # trust it even when the cclimits cache is cold/stale
+            elif said_limit:
+                # the CLI wrote its limit notice into the transcript — trust it
+                # even when the cclimits cache is cold/stale, and even when the
+                # write that carried it is what made this session look busy.
                 s["status"] = "limit"
                 s["limit"] = {"worst": None, "group": None, "resets_at": None}
 

@@ -280,6 +280,48 @@ class TestCollectPipeline(_Fleet):
         self.assertEqual(st["worktrees"][0]["sessions"][0]["status"], "ended")
         self.assertEqual(st["worktrees"][0]["availability"], "free")
 
+    def test_a_session_that_just_announced_its_limit_is_not_working(self):
+        """**The announcement is itself a write, and the write said "busy".**
+
+        `working` means the transcript moved inside `working_s`. The CLI's limit
+        notice — *"You've hit your session limit · resets 1:30pm"* — IS a
+        transcript write, so for that whole window the session looked busy, and
+        the limit join skipped anything not `needs_input`/`blocked`/`waiting`.
+        The board therefore showed `● WORKING` for an agent that was parked and
+        could not move, at exactly the moment its owner most needed to know. Seen
+        on the real fleet with eight sessions carrying that notice.
+        """
+        write_transcript(self.home, self.repo, "main", sid="s1", entries=[
+            user_msg("do a thing"),
+            assistant_msg(text="You've hit your session limit · resets 1:30pm "
+                               "(Europe/Berlin)"),
+            turn_end()])
+        st = fb.collect_state()                      # fresh file → would be WORKING
+        s = st["worktrees"][0]["sessions"][0]
+        self.assertEqual(s["status"], "limit",
+                         "a session whose newest words are the limit notice is "
+                         "parked, however recently it wrote them")
+        # and it is honest about knowing no reset time: this signal is the
+        # transcript, not cclimits, so there is no `resets_at` to report.
+        self.assertIsNone(s["limit"]["resets_at"])
+
+    def test_the_older_limit_wording_still_reads(self):
+        """The regex predates the current CLI copy; both must land."""
+        write_transcript(self.home, self.repo, "main", sid="s1", entries=[
+            user_msg("go"),
+            assistant_msg(text="You are out of usage credits for now."),
+            turn_end()])
+        st = fb.collect_state()
+        self.assertEqual(st["worktrees"][0]["sessions"][0]["status"], "limit")
+
+    def test_a_genuinely_working_session_is_left_alone(self):
+        """The guard exists for a reason — do not relabel a busy agent."""
+        write_transcript(self.home, self.repo, "main", sid="s1", entries=[
+            user_msg("go"), assistant_msg(text="reading the shard map now"),
+            turn_end()])
+        st = fb.collect_state()
+        self.assertEqual(st["worktrees"][0]["sessions"][0]["status"], "working")
+
     def test_pending_workflow_reported(self):
         fp = write_transcript(self.home, self.repo, "main", sid="s1", entries=[
             user_msg("delegate everything"), assistant_msg(text="delegated"),
