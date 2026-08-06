@@ -14,6 +14,10 @@
   "log_max_mb": 8.0,
   "log_keep": 5,
 
+  "_uploads": "POST /api/v1/uploads writes an image from the phone to ~/.orchestra/uploads/<YYYY-MM-DD>/ (0700 dirs, 0600 files, outside every git worktree on purpose) and answers with its absolute path, which the app pastes into the message — a path is the only way to hand an agent a picture. PNG/JPEG/GIF/WebP/HEIC only, sniffed from the bytes; the server names the file. These are orchestra's OWN files, so unlike your transcripts they are pruned: upload_retain_days, with a hard 24-hour floor that outranks any smaller value. Set upload_retain_days to 0 to keep them forever.",
+  "upload_max_mb": 10.0,
+  "upload_retain_days": 30,
+
   "apns_team_id": "XXXXXXXXXX",
   "apns_topic": "sh.orchestra.app",
   "apns_environment": "sandbox",

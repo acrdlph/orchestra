@@ -11,6 +11,11 @@ Two jobs, and the line between them is the entire point of this module.
     `dispatch.log.jsonl` are files this program creates and is therefore
     entitled to rotate. They had no rotation at all: `auth.audit`'s own
     docstring said "appended, 0600, never rotated" as a statement of fact.
+  * **PRUNE the uploads, for the same reason and by the same test.**
+    `~/.orchestra/uploads/<day>/` holds images the phone sent (`uploads.py`);
+    orchestra chose their directory, chose their names and wrote their bytes,
+    so they are ITS files and not the user's, which is the whole distinction
+    this module is built around. They age out at `upload_retain_days`.
 
 The reason for the fuss is a real incident, not a policy preference. A
 workflow-running session could not write its `.jsonl` because the disk was
@@ -34,7 +39,7 @@ reachable, at a throttled ceiling, by an unauthenticated peer), not because it
 is the answer to the disk. The answer to the disk is the report, and the person
 reading it.
 
-THE TWO DELETION GUARDS, and they are both checked at the syscall and not at
+THE THREE DELETION GUARDS, and they are all checked at the syscall and not at
 the call site, because a call site can be added by someone who has not read this:
 
   1. `_ours` — a path may be unlinked only if it is a rotated SEGMENT sitting
@@ -45,6 +50,12 @@ the call site, because a call site can be added by someone who has not read this
      resolved path starts with `.claude`. Guard 1 already excludes it; this one
      exists so that a future refactor of guard 1 cannot reach the corpus by
      accident. It is the guard that has no legitimate way to fire.
+  3. `_ours_upload` — the same idea, one directory over: an upload may be
+     unlinked only if it is a REGULAR FILE (never a symlink, never a
+     directory) sitting directly inside `<uploads root>/<YYYY-MM-DD>/`, under
+     a name of the exact shape `uploads.py` generates — sixteen hex characters
+     and a sniffed extension. A file a user dropped into that folder by hand
+     does not match and is not touched, and guard 2 is checked here too.
 
 The watcher's open descriptors need no third guard, and that is worth stating
 so nobody goes looking: `watcher.py` holds fds on transcripts and on session
@@ -55,6 +66,7 @@ Nothing this module can delete is anything the watcher can hold.
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -81,6 +93,15 @@ LOG_KEEP = 5                # config key "log_keep"
 # number. If the floor and `log_keep` disagree, the floor wins and the extra
 # segments simply survive until they age out.
 PRUNE_FLOOR_S = 7 * 86400   # not a config key ON PURPOSE
+
+# The uploads floor, and it is here for the reason above's cousin: an upload's
+# whole purpose is that its PATH was handed to an agent, and an agent may sit
+# on that path for a long turn, a limit reset, or a night. A day is far longer
+# than any of those and is the answer to "what if somebody sets
+# `upload_retain_days` to 0.001". `upload_retain_days: 0` reads as "keep them
+# forever" (see `uploads.retain_s`), which is the safe end of the same
+# misconfiguration.
+UPLOAD_FLOOR_S = 86400      # not a config key ON PURPOSE, same as above
 
 # What the corpus scan costs, measured over the 35,365 files above: 1,256 ms
 # cold, 135 ms warm. That is why it is never on a request path and never in the
@@ -138,6 +159,50 @@ def _ours(live, seg):
     if not _SEGMENT_RE.match(seg.name[len(live.name):]):
         return False
     return not _user_data(seg)
+
+
+def _ours_upload(path, root=None):
+    """May `path` be unlinked as an image THIS program wrote? (Guard 3.)
+
+    Four things have to be true at once, and they are checked against the
+    filesystem rather than against the caller's word:
+
+      * it resolves to `<root>/<YYYY-MM-DD>/<name>` — exactly two levels, no
+        deeper, and the resolution is what stops a symlink inside the uploads
+        folder from laundering a path that lives somewhere else entirely;
+      * the day directory is a date and the name is a shape `uploads.py`
+        generates — `^[0-9a-f]{16}\\.<ext>$`, or the `.part-<8 hex>` a write
+        killed halfway leaves behind — so a file the user dropped in there
+        themselves (`notes.txt`, `keep-this.png`) is never a candidate;
+      * `lstat` says it is a REGULAR FILE, so neither a symlink nor a directory
+        is ever handed to `unlink`;
+      * guard 2 agrees, which it always will here and which costs one `resolve`.
+
+    `uploads` is imported lazily and its root is read THROUGH the module
+    object, for `own_logs`' reason: the tests rebind `uploads.UPLOAD_ROOT` into
+    a tmpdir, and a value captured at import time would point this function at
+    the developer's real photos during the test run.
+    """
+    from . import uploads
+    path = Path(path)
+    root = Path(uploads.UPLOAD_ROOT if root is None else root)
+    try:
+        here, base = path.resolve(), root.resolve()
+    except OSError:
+        return False            # cannot resolve it => cannot prove it is ours
+    if here.parent.parent != base:
+        return False
+    if not uploads.DAY_RE.match(here.parent.name):
+        return False
+    if not (uploads.NAME_RE.match(here.name) or uploads.TEMP_RE.match(here.name)):
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return not _user_data(path)
 
 
 # ------------------------------------------------------------- the own logs
@@ -208,7 +273,8 @@ def rotate_if_needed(live, max_bytes=None, now=None, record=True):
 def prune_logs(logs=None, keep=None, floor_s=PRUNE_FLOOR_S, now=None, record=True):
     """Reap rotated segments beyond `keep` that are older than the floor.
 
-    THE ONLY code in orchestra that unlinks anything. Returns a summary —
+    One of the two places in orchestra that unlink anything (`prune_uploads`
+    below is the other, and it has a guard of its own). Returns a summary —
     `{"removed": n, "bytes_freed": b, "kept": k, "held_by_floor": h}` — and
     writes one audit line per batch that actually removed something.
 
@@ -251,6 +317,95 @@ def _keep():
         return max(0, int(config.CFG.get("log_keep", LOG_KEEP)))
     except (TypeError, ValueError):
         return LOG_KEEP
+
+
+# ------------------------------------------------------------- the uploads
+
+def prune_uploads(root=None, retain_s=None, floor_s=UPLOAD_FLOOR_S, now=None,
+                  record=True):
+    """Reap images past `upload_retain_days`. The SECOND thing that unlinks.
+
+    Same summary shape as `prune_logs` — `{"removed", "bytes_freed", "kept",
+    "held_by_floor"}` — and one audit line per batch that actually removed
+    something, so the two reaps read alike in the log.
+
+    THE DISTINCTION THAT PERMITS THIS AT ALL is the one in the module
+    docstring: `~/.claude*/projects` is the user's data and is reported on,
+    never touched; `~/.orchestra/uploads` is a directory this program created,
+    holding files this program named, and pruning it is housekeeping rather
+    than a decision made on the user's behalf. If those two ever look alike to
+    somebody editing this file, the difference is who chose the filename.
+
+    `retain_s <= 0` is the documented off switch (`"upload_retain_days": 0`)
+    and returns without walking anything: a knob that means "keep my images"
+    must not be one restart away from meaning "delete them all".
+    """
+    from . import uploads
+    now = time.time() if now is None else now
+    keep_s = uploads.retain_s() if retain_s is None else retain_s
+    out = {"removed": 0, "bytes_freed": 0, "kept": 0, "held_by_floor": 0}
+    if keep_s <= 0:
+        return out
+    root = Path(uploads.UPLOAD_ROOT if root is None else root)
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    # `_scan` swallows the missing-directory case, which is the common one:
+    # nothing has ever been uploaded on most machines.
+    for day in sorted(_scan(root), key=lambda e: e.name):
+        try:
+            if not day.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if not uploads.DAY_RE.match(day.name):
+            continue             # not a directory this module made
+        for entry in _scan(day.path):
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            age = now - st.st_mtime
+            if age < keep_s:
+                out["kept"] += 1
+                continue
+            if age < floor_s:
+                # Reached only when the KNOB is shorter than the floor, which
+                # is what makes this count mean the same thing it means for the
+                # logs: "this one was due and the floor held it". A path handed
+                # to an agent this morning is not reaped this afternoon,
+                # whatever `upload_retain_days` has been set to.
+                out["held_by_floor"] += 1
+                continue
+            if not _ours_upload(entry.path, root=root):   # guard 3, at the syscall
+                continue
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                continue
+            out["removed"] += 1
+            out["bytes_freed"] += st.st_size
+        # An emptied day directory goes too — but never TODAY's, which an
+        # upload landing in this same second may have just created and be
+        # writing into. `rmdir` refuses a non-empty directory, so the check is
+        # the syscall rather than a listing that could go stale between.
+        if day.name != today:
+            try:
+                os.rmdir(day.path)
+            except OSError:
+                pass
+    if record and out["removed"]:
+        audit_event(event="upload_prune", **out)
+    return out
+
+
+def _scan(path):
+    """`os.scandir` as a list, never raising. The directory may vanish under a
+    concurrent reap or a user tidying up; that is not an error worth ending a
+    maintenance pass over."""
+    try:
+        with os.scandir(path) as it:
+            return list(it)
+    except OSError:
+        return []
 
 
 def own_logs():
@@ -446,6 +601,10 @@ def disk_loop():
         try:
             report(force=True)
             prune_logs()
+            # The images the phone sent, on the same multi-hour clock and for
+            # the same reason: they are orchestra's own files, and nothing else
+            # in the program ever comes back to them.
+            prune_uploads()
         except Exception as e:   # noqa: BLE001 — a broken pass must not end the loop
             print(f"orchestra: disk report failed: {e}", file=sys.stderr)
         time.sleep(every)

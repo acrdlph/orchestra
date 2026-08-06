@@ -13,7 +13,9 @@ the map's topology, limits, the dispatch log, a chat drawer — plus the four
 static HTML pages, read off disk from `config.HERE` on every request so an
 edit shows up on reload. POST is the acting half, and every one of its routes
 is a click somebody made: reserve, schedule/cancel a resume, send text to a
-session, finish a mission, dispatch a new agent.
+session, finish a mission, dispatch a new agent, take an image off the phone
+and write it to this Mac (`uploads.py` — the reply is the path, and the path
+is what an agent can actually read).
 
 `GET /api/events` is the one route that is not a request/response at all: it
 is the state STREAM (ADR 0005), a socket held open for the life of the client
@@ -45,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import (config, auth, gitrepo, limits, observer, terminal, chat,
                dispatch, resume, finish, pairing, tailnet, notify, idem,
-               sessionlog)
+               sessionlog, uploads)
 
 MAX_SUBSCRIBERS = 32        # concurrent SSE streams; config key "sse_max_subscribers"
 KEEPALIVE_S = 25.0          # silence before a comment frame; key "sse_keepalive_s"
@@ -768,6 +770,18 @@ class Handler(BaseHTTPRequestHandler):
         # to EOF and, paired with the socket timeout above, pin the thread for
         # its whole span; an oversized one would buffer gigabytes into a single
         # bytes object and drive the process to OOM. Neither reads a byte.
+        #
+        # THE CAP IS PER ROUTE, and it is resolved HERE — before the read, and
+        # therefore before the router runs, which is why it matches on the path
+        # rather than on a route object. `MAX_BODY` (256 KB) stays exactly what
+        # it was for every route on this server: it is the global that stops a
+        # peer buffering gigabytes into one bytes object, and raising it so one
+        # route can carry an image would put the whole surface behind an
+        # image-sized cap. `/api/v1/uploads` brings its own instead
+        # (`uploads.max_body()`, ~13.3 MB at the default 10 MB knob), and the
+        # two never fight: exactly one of them is consulted per request.
+        route = self.path.split("?", 1)[0]
+        cap = uploads.max_body() if route == "/api/v1/uploads" else MAX_BODY
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -777,10 +791,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "bad_length",
                                     "message": "Content-Length must be a "
                                     "non-negative integer"})
-        if n > MAX_BODY:
+        if n > cap:
             self.close_connection = True
             return self._json(413, {"ok": False, "error": "too_large",
-                                    "message": f"body exceeds the {MAX_BODY} "
+                                    "message": f"body exceeds the {cap} "
                                     "byte cap"})
         try:
             payload = json.loads(self.rfile.read(n).decode() or "{}")
@@ -817,7 +831,7 @@ class Handler(BaseHTTPRequestHandler):
             # to fail safe — `/api/v1/pairX` is not in `auth.EXEMPT`, so it demanded
             # a token it would then have handed to `pairing.claim` — but "safe by
             # luck this time" is what the GET was too. One shape, no luck.
-            route = self.path.split("?", 1)[0]
+            # (`route` is bound above the body read: the size cap is per route.)
             if route == "/api/v1/pair":
                 # The bootstrap. `auth.EXEMPT` lets it through with no token —
                 # every other guard in `pairing.claim` still applies, starting with
@@ -847,6 +861,32 @@ class Handler(BaseHTTPRequestHandler):
                          "/api/v1/devices/self/settings",
                          "/api/v1/push/test", "/api/v1/push/mute"):
                 return self._push_self(route, payload)
+            if route == "/api/v1/uploads":
+                # An image from the phone, written to this Mac; the reply
+                # carries the absolute path, which the app pastes into the
+                # message it was already sending (uploads.py says why that is
+                # the whole design). NOT exempt from anything: it is a mutation
+                # that writes to the user's disk, so it arrives through the same
+                # door as `/api/send` and answers 401 to a stranger.
+                #
+                # 200 with the `{"ok": false, "error": "<sentence>"}` envelope
+                # rather than this surface's usual real status codes, and the
+                # exception is deliberate: every refusal here is something the
+                # PERSON HOLDING THE PHONE has to fix — that was a video, that
+                # photo is too big — so the useful thing to hand the app is a
+                # sentence to show, not a code to branch on. The device id, not
+                # the device record, goes to the audit line.
+                #
+                # It also returns ABOVE the idempotency wrapper, and is absent
+                # from `idem.MUTATION_ROUTES`, because it does not need it: the
+                # filename is the content's own digest, so a retry lands on the
+                # same path and writes nothing. That is the property an
+                # `Idempotency-Key` would buy, without storing a copy of the
+                # response for an hour.
+                dev = getattr(self, "device", None)
+                return self._json(200, uploads.receive(
+                    payload, device=(dev or {}).get("id"),
+                    peer=self.client_address[0] if self.client_address else ""))
             if auth.admin("POST", route):
                 # `/api/v1/devices/<id>/revoke`. Parsed rather than matched so the
                 # path shape is API.md §2.5's, which is what the Swift client and
