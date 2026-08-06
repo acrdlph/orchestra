@@ -58,7 +58,7 @@ Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 264 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 290 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -98,6 +98,12 @@ SIMCTL_CHILD_ORC_SCREEN=resume:ConfidAi7/<sid>      xcrun simctl launch booted s
 SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAi7/account4/<sid> \
 SIMCTL_CHILD_ORC_SEND='reply with exactly the words: the phone reached you' \
      xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAi7/account4/<sid> \
+SIMCTL_CHILD_ORC_CHAT='half a reply, already typed'  xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=mission \
+SIMCTL_CHILD_ORC_DISPATCH=running                    xcrun simctl launch booted sh.orchestra.app
+#   ORC_CHAT     seeds THIS session's chat draft, once, at launch
+#   ORC_DISPATCH renders the Launching screen: launching|running|finished|failed|refused|lost
 
 # 8. phase 5 — the demo fleet, with no server anywhere
 SIMCTL_CHILD_ORC_SCREEN=demo                       xcrun simctl launch booted sh.orchestra.app
@@ -600,10 +606,18 @@ small affordance that appears next to the character count only when there is a
 draft and asks once before it does it. A *refused* dispatch keeps the draft:
 "Back to the draft" has to have a draft to go back to.
 
-Seventeen tests in `DraftTests.swift` drive the store against a throwaway
+Twenty tests in `DraftTests.swift` drive the store against a throwaway
 `UserDefaults` suite: the round trip, the debounce coalescing five keystrokes
 into one write, both sides of the 24 h window, the kill-with-no-background
-fallback, whitespace-is-not-content, and the launch/cancel/discard split.
+fallback, whitespace-is-not-content, the launch/cancel/discard split, and
+`restoreIfEmpty` — the rule behind **"Back to the draft"**. That last one closes
+a hole the clear-on-job rule opened: the draft goes the moment a job id comes
+back, so a run that started and then *failed* left "Back to the draft" pointing
+at an empty editor. `ActionsStore.DispatchRun` kept its own copy of all five
+fields, and an empty composer gets them back — an empty one only, because a
+mission the user has already started retyping outranks the record of the last
+one. A *refused* dispatch never cleared anything (no job), so there it is a
+no-op.
 
 ### Two more `#if DEBUG` seams, for the same reason as the first three
 
@@ -616,6 +630,114 @@ the draft through `DraftStore.setMission`, the same call the editor makes on
 every keystroke, because the two things most worth looking at — a picker
 presented over a LONG mission, and a draft surviving a background — both need
 text on screen that no script can type.
+
+### 3. The same defect, one screen along: the CHAT draft
+
+Reported from a phone, in the same words as the mission one: *"When I input chat
+into an agent conversation … and then go out of the app and do something else, or
+I have to give permission to Wispr to allow it to enter into that text field, the
+input that I had already entered is lost."* Same cause exactly — `ChatView` held
+`@State private var draft` and it is a **pushed destination inside the gated
+subtree**, so the re-lock takes the screen and everything on it. Same fix, same
+machinery: `DraftStore` grew a second half rather than a second store.
+
+* **Keyed by `sid` alone.** A sid is the CLI session's own v4 UUID (`DebugRoute`
+  parses it as "a UUID with dashes"), unique across accounts and worktrees, so
+  the account adds nothing to the key — and leaving it out is what makes one
+  conversation carry one draft whether it was reached from the board or from the
+  worktree screen. Sends are still addressed by `(account, sid)` because the
+  *server* resolves a process that way (ADR 0008); which text belongs to which
+  screen is a different question.
+* **Bounded at both ends**, because a fleet churns through sessions and
+  `UserDefaults` is not a database: at most **20** drafts, evicted LRU by
+  last-touched, and nothing kept longer than **7 days**. Both bounds are pure
+  functions on `ChatDrafts` and are re-applied on load and on every edit. Empty
+  and whitespace-only text removes its entry rather than leaving a tombstone.
+* **One blob under one key**, for the same reason the mission is one blob: a key
+  per session would leave a key per dead session behind, which is the growth the
+  bounds exist to prevent.
+* **Cleared only by a send that is proved to have left.** `ChatStore.send`
+  answers an `Outgoing.State?`, and `didLeave` is true for exactly `typed`
+  (`rc == 0` from a real tty) and `inTranscript`. `refused`, `ambiguous`, `lost`
+  and a nil (the send was never attempted) all **keep** the text and put it back
+  in the field: at that moment the composer holds the only copy the user has, and
+  the outgoing bubble that also shows it dies with the screen at the next re-lock.
+  A duplicate is a nuisance; a deleted paragraph is gone.
+* One real bug fell out of writing that rule: on the *success* path `send` used
+  to `return outbox.last?.state`, and the strongest outcome — the message sighted
+  in the transcript, which **removes** the bubble — left that nil, the same value
+  the function returns when it refuses to send at all. It now reads back by id
+  and treats a missing bubble as `inTranscript`.
+
+The field itself keeps its `@State`, hydrated from the store on appear and
+written through on every change. That is deliberate and it is the one difference
+from the mission composer, which binds straight to the store: assigning a
+`TextField`'s bound String from outside moves the caret to the end, and this
+screen only ever needs the text from outside once — on the appear that follows
+the unlock.
+
+`ChatDraftTests` (17 tests) covers the round trip, two sids not colliding, the
+debounce, the background flush carrying both composers, the LRU cap, both sides
+of the 7-day window, and the send ladder: `typed` clears, `refused` does not.
+
+### 4. Cancel and Launch stayed on the Launching screen
+
+Also reported from a phone: *"there's a cancel and launch header button on the
+launching screen … I'm not sure if it's too late to cancel, but it's definitely
+too late to launch."* Both halves were true. The `.toolbar` was attached to the
+outer `Group`, so both buttons rode through the whole dispatch:
+
+* **Launch was a dead control** — `canLaunch` is false while `dispatch != nil`,
+  so from the instant the mission was confirmed it rendered permanently disabled.
+* **"Cancel" was a lie of labelling.** It called `dismiss()` and nothing else. It
+  did not stop the mission and it *cannot*: `/api/kill` does not exist (row 33
+  below), so this app has no undo for a launch. A button labelled Cancel on a
+  screen titled "Launching" reads as "stop this".
+
+`Rules/ComposerChrome.swift` makes the toolbar a function of the run's phase —
+outside `UI`, because `UI` is excluded from the test target and a toolbar rule
+that can only be checked by looking at a screenshot is one that drifts.
+
+| phase | leading | trailing |
+| --- | --- | --- |
+| no run — editing | `Cancel` (keeps the draft) | `Launch` |
+| `launching`, `running` | `Close` | — |
+| `finished`, `refused`, `lost` | — | — |
+
+In flight, the body says in words what Close does not do: *"Closing this doesn't
+stop the mission, and nothing on this phone can — there is no kill switch on the
+server. Attach on the Mac."* In a **terminal** phase the toolbar carries nothing
+at all, because the body already carries exactly one action per phase (`Done`, or
+`Back to the draft`) and two buttons that both leave — one of which also clears
+the run — is a choice with no meaning. Nobody is trapped: the sheet still
+dismisses interactively, and every terminal phase has its own action on screen.
+
+### Two more `#if DEBUG` seams: `ORC_CHAT` and `ORC_DISPATCH`
+
+```sh
+SIMCTL_CHILD_ORC_SCREEN=demo:chat:search-index/main/<sid> \
+SIMCTL_CHILD_ORC_CHAT='half a reply, already typed'  xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=demo:mission \
+SIMCTL_CHILD_ORC_DISPATCH=running                    xcrun simctl launch booted sh.orchestra.app
+#   ORC_DISPATCH = launching | running | finished | failed | refused | lost
+```
+
+`ORC_CHAT=<text>` seeds the chat composer for whichever session `ORC_SCREEN=chat:`
+is about to open, through the same `DraftStore.setChatDraft` the field calls on
+every keystroke. It runs **once, at launch, in `AppModel`** and deliberately not
+in `ChatView`: the thing being verified is that the field survives its view being
+destroyed and rebuilt, and a seam that re-seeded on every appear would paint the
+restore it is supposed to prove. Seeded once, everything after it — the lock, a
+background, a cold relaunch with no seed at all — is the real path.
+
+`ORC_DISPATCH=<phase>` renders the **Launching** screen for a run that does not
+exist. It is the one seam that does not press a button, and the reason is worth
+stating: reaching that screen for real means spending an account's usage and
+starting an agent on somebody's Mac, and the demo fleet cannot reach it either
+(`canLaunch` is false in demo, and `ActionsStore.launch` answers `.refused`
+there by design). Only the phase is injected; the title, the toolbar rule, the
+body and the copy are the real code reading a real `DispatchRun`, and
+`actions.dispatch` always wins, so a real launch is never shadowed.
 
 ## Phase 2: three defects found by RUNNING it, not by reading
 

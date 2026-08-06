@@ -27,7 +27,27 @@ public struct ChatView: View {
     @Bindable private var fleet: FleetStore
     @State private var chat: ChatStore
 
+    /// What the field is showing. **The durable copy is in `DraftStore`** — this
+    /// is the `TextField`'s own buffer, hydrated from the store when the screen
+    /// appears and written back through it on every change.
+    ///
+    /// A mirror rather than a direct `Binding` into the store, deliberately, and
+    /// for the reason the comment on the field itself gives: assigning a
+    /// `TextField`'s bound String from outside moves the caret to the end. This
+    /// view is a PUSHED destination that the lock destroys and rebuilds whole, so
+    /// there is exactly one moment the text needs to come from outside — the
+    /// appear — and after that nothing writes into the field but the keyboard.
     @State private var draft = ""
+    /// The text of a send that is still in flight, held so the persisted draft is
+    /// **not** cleared until the server has proved the message left. The field
+    /// empties on the tap (a send has to feel like a send); the store keeps
+    /// holding what was sent until `Outgoing.State.didLeave` says otherwise.
+    @State private var inFlight: String?
+    /// The draft store, from the environment rather than the initialiser: this
+    /// screen is pushed from two places (`FleetView` and `WorktreeDetailView`)
+    /// and neither is a composition root. Optional so that a subtree that never
+    /// installs one degrades to a screen-lifetime draft instead of trapping.
+    @Environment(DraftStore.self) private var drafts: DraftStore?
     @FocusState private var composerFocused: Bool
     /// The connection strip's real height. A bottom-pinned control inside a
     /// PUSHED destination does not receive the `safeAreaInset` the tab applied
@@ -144,6 +164,25 @@ public struct ChatView: View {
             }
             .onReceive(ticker) { now = $0 }
             .task { chat.start() }
+            // **The reported defect, from the other side.** Leaving the app for a
+            // second — to grant a dictation app permission, say — re-locks the
+            // biometric gate, and `RootView` swaps this whole subtree for
+            // `LockView`, which takes this screen and every `@State` on it. The
+            // draft is read back here, on the appear that follows the unlock, and
+            // it is read from the one place the lock cannot reach.
+            .task {
+                guard draft.isEmpty, let stored = drafts?.chatDraft(for: sid) else { return }
+                draft = stored
+            }
+            // Every keystroke, in memory now and on disk 500 ms later — the same
+            // debounce the mission composer uses, and the same synchronous flush
+            // on `.background` in `OrchestraApp`. Suppressed while a send is in
+            // flight so the optimistic empty field cannot erase the persisted
+            // copy of a message that has not landed yet.
+            .onChange(of: draft) { _, text in
+                guard inFlight == nil else { return }
+                drafts?.setChatDraft(text, for: sid)
+            }
             #if DEBUG
             // `ORC_SCREEN=transcript:<wt>/<account>/<sid>` — the same seam as
             // `chat:`, one push deeper. A simulator cannot be tapped and the
@@ -319,8 +358,13 @@ public struct ChatView: View {
                     // footnote below says so before you press send.
                 Button {
                     let text = draft
+                    // Optimistic, because a send has to feel like one — but only
+                    // the FIELD empties. The persisted draft is what the user
+                    // gets back if this turns out not to have left, so it is held
+                    // until the server says something (see `inFlight`).
+                    inFlight = text
                     draft = ""
-                    Task { await chat.send(text) }
+                    Task { await send(text) }
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(OrcFont.button)
@@ -351,6 +395,41 @@ public struct ChatView: View {
     private var sendEnabled: Bool {
         !fleet.isDemo && !chat.sending
             && !WireText.collapsed(draft).isEmpty && session != nil
+    }
+
+    /// Send, and then decide what happens to the draft — the whole rule in one
+    /// place.
+    ///
+    /// **Cleared only on the outcome that proves it left**, which is `✓ typed`
+    /// (`rc == 0` from a real tty) or the `✓✓` that follows it. A refusal, an
+    /// ambiguous send and a lost one all put the text back in the field and leave
+    /// it on disk: at that moment the composer holds the only copy the user has,
+    /// and the outgoing bubble that also shows it dies with this screen the next
+    /// time the gate re-locks.
+    /// **Nothing here writes the FIELD over the store on the losing path**, and
+    /// that is not fussiness: this task outlives the view. A send that is still
+    /// out when the app is backgrounded comes back to a `@State` the lock has
+    /// already destroyed, which reads as empty — and "write the empty field to
+    /// disk" is precisely the data loss this whole change exists to stop. So the
+    /// failure path only ever *adds*: the store is still holding the message,
+    /// untouched, because `onChange` was suppressed for the whole flight.
+    private func send(_ text: String) async {
+        let outcome = await chat.send(text)
+        if outcome?.didLeave == true {
+            drafts?.clearChatDraft(for: sid)
+            // Anything typed while the send was out is the draft now.
+            if !draft.isEmpty { drafts?.setChatDraft(draft, for: sid) }
+        } else if draft.isEmpty {
+            // It did not leave, and nothing was typed in the meantime: the field
+            // is where this belongs. The store never stopped holding it.
+            draft = text
+        } else {
+            // It did not leave, but something else has been typed since. The
+            // field is the newer intent and wins; the message itself is still on
+            // screen in its outgoing bubble, carrying the server's own reason.
+            drafts?.setChatDraft(draft, for: sid)
+        }
+        inFlight = nil
     }
 
     private func refusal(_ message: String) -> some View {
