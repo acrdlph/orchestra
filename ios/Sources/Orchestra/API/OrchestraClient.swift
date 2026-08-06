@@ -184,6 +184,26 @@ public actor OrchestraClient {
                        to: profile, as: ResumeReply.self)
     }
 
+    // MARK: - Uploads
+
+    /// Write one image to the Mac and get its absolute path back.
+    ///
+    /// `onProgress` is real bytes-on-the-wire, not a spinner pretending: this is
+    /// the only call in the app whose body can be ten megabytes, and on a tunnel
+    /// that is the one wait long enough that a user needs to see it moving.
+    /// Passing it switches the transport from `data(for:)` to
+    /// `upload(for:from:delegate:)`, which is the only way `URLSession` reports
+    /// `didSendBodyData`.
+    ///
+    /// A refusal is a **value** — `.refused(sentence)` — like every other
+    /// mutation on this wire. It throws only for a door failure (401, 415, 413)
+    /// or when no answer came back at all.
+    public func upload(base64 data: String, name: String?,
+                       onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> UploadReply {
+        try await send(Endpoint.upload(base64: data, name: name), to: profile,
+                       as: UploadReply.self, onProgress: onProgress)
+    }
+
     // MARK: - Push
 
     /// Register (or re-register) this device's APNs token. A refusal here is a
@@ -225,7 +245,9 @@ public actor OrchestraClient {
 
     private func send<T: Decodable & Sendable>(_ endpoint: Endpoint,
                                                to profile: ServerProfile?,
-                                               as type: T.Type) async throws -> T {
+                                               as type: T.Type,
+                                               onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> T {
         guard let profile, let base = profile.baseURL else {
             throw OrchestraError.unauthorized(nil)
         }
@@ -240,7 +262,18 @@ public actor OrchestraClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            // **`upload(for:from:)`, not `data(for:)`, when somebody is
+            // watching.** A per-task delegate is the only place `URLSession`
+            // reports `didSendBodyData`, and it is only attachable to an upload
+            // task. The body stays on the endpoint so `urlRequest` still sets
+            // `Content-Type: application/json` — the CSRF guard — and
+            // `URLSession` takes the `from:` data over the request's own.
+            if let onProgress, let body = endpoint.body {
+                (data, response) = try await session.upload(
+                    for: request, from: body, delegate: UploadProgress(onProgress))
+            } else {
+                (data, response) = try await session.data(for: request)
+            }
         } catch {
             throw ErrnoCause.classify(error)
         }
@@ -262,6 +295,30 @@ public actor OrchestraClient {
             throw OrchestraError.decoding(Self.describe(error))
         } catch {
             throw OrchestraError.decoding(error.localizedDescription)
+        }
+    }
+
+    /// How far up the wire one upload has got.
+    ///
+    /// A `URLSessionTaskDelegate` is a class and `URLSession` calls it on its own
+    /// delegate queue, so it cannot be an actor and cannot be checked by the
+    /// compiler — hence `@unchecked Sendable`. What makes that safe here is that
+    /// it holds exactly one immutable `@Sendable` closure and no mutable state at
+    /// all: there is nothing for two threads to race over, and the hop back to
+    /// the main actor is the closure's own business (`UploadStore` does it).
+    /// One instance per task, alive only for that task.
+    private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let report: @Sendable (Double) -> Void
+
+        init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                        totalBytesExpectedToSend: Int64) {
+            // `NSURLSessionTransferSizeUnknown` is -1 and a division by it is a
+            // progress bar that jumps backwards.
+            guard totalBytesExpectedToSend > 0 else { return }
+            report(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
         }
     }
 

@@ -52,13 +52,25 @@ A native SwiftUI client for the orchestra board.
   everything is present, structure decides what is open. See "Phase 6 — the full
   transcript" below.
 
+* **Phase 7** let the phone hand an agent a **picture**. A screenshot picked in
+  either composer is uploaded to the Mac and its absolute path is dropped into
+  the message — which is what dragging a file into a `claude` session does, and
+  the only thing an agent can actually read. The path is plain text in the draft
+  and nothing else: the thumbnail strip is parsed back out of it, so deleting the
+  path deletes the attachment, and the persistence that already existed carries it
+  through a re-lock. A screenshot is sent **byte for byte**; a HEIC is transcoded
+  because the far end cannot read one. Proven on 2026-08-06: a 1320×2868
+  screenshot of this app's own board reached `~/.orchestra/uploads/` on a real
+  Mac, and `cmp` says the file there IS the file that left. See "Phase 7 — a
+  screenshot from the phone lands on the Mac" below.
+
 ## Build and run it — the only way this is verified
 
 Everything below runs from a shell. No Xcode GUI, no Apple ID, no team.
 
 ```sh
 # 1. the headless suites — models, transport classification, rules, formatters
-cd ios && swift test                    # 290 tests, ~1 s, macOS, no simulator
+cd ios && swift test                    # 336 tests, ~1 s, macOS, no simulator
 
 # 2. the app
 xcodebuild -project ios/Orchestra.xcodeproj -scheme Orchestra \
@@ -137,6 +149,42 @@ SIMCTL_CHILD_ORC_TRANSCRIPT=top,tools,all,noise,fail \
 #           whether a thumb could have reached any of what the walk fetched.
 #           See "The defect a phone found: a loader that spun forever".
 SIMCTL_CHILD_ORC_SCREEN=demo:resume:release-notes/a0539f74-2b6e-4d81-93cf-1e7a48d5c6b2  …
+
+# 10. phase 7 — a screenshot from the phone lands on the Mac
+SIMCTL_CHILD_ORC_SCREEN=chat:ConfidAI/account3/<sid> \
+SIMCTL_CHILD_ORC_UPLOAD=/tmp/shot.png    xcrun simctl launch booted sh.orchestra.app
+SIMCTL_CHILD_ORC_SCREEN=mission \
+SIMCTL_CHILD_ORC_UPLOAD=/tmp/shot.png    …   # the same control, other composer
+SIMCTL_CHILD_ORC_UPLOAD=picker           …   # the source dialog, not taken
+SIMCTL_CHILD_ORC_UPLOAD=photos           …   # the system photo sheet
+SIMCTL_CHILD_ORC_SCREEN=demo:chat:search-index/personal/9c1f4a2e-7b30-4c58-9a11-2d6e83f0b415 \
+SIMCTL_CHILD_ORC_UPLOAD=/tmp/shot.png    …   # demo refuses, in the server's voice
+#   A PATH reads that file and hands it to the SAME `UploadStore.attach` and the
+#   same draft insert the picker's callback uses — the transcode, the size
+#   precheck, the POST, the thumbnail strip and the write into the draft are all
+#   the shipping code. `picker` and `photos` press the two presentations a tap
+#   opens and a script otherwise cannot reach at all.
+
+SIMCTL_CHILD_ORC_NO_PUSH=1               …   # suppress the notifications ASK
+#   Not a feature seam — a way to SEE the app. The first paired launch puts
+#   SpringBoard's "orchestra Would Like to Send You Notifications" over the
+#   middle third of the screen, which is where the mission composer's attachment
+#   strip lives, and there is no `ORC_SCREEN` that reaches a system alert:
+#   `simctl` cannot tap and an accessibility click answers -25204 (re-measured
+#   2026-08-06). It suppresses the ASK and nothing else — registration, the
+#   router and the preferences screen are untouched.
+```
+
+**Face ID, without a face.** A paired build sits behind `BiometricGate`, and on a
+fresh simulator with nothing enrolled that is a passcode sheet nothing can
+answer. Two commands get past it, and the second is the only interaction in this
+whole file that a *menu* can do and `simctl` cannot:
+
+```sh
+xcrun simctl spawn booted notifyutil -s com.apple.BiometricKit.enrollmentChanged 1
+xcrun simctl spawn booted notifyutil -p com.apple.BiometricKit.enrollmentChanged
+osascript -e 'tell application "Simulator" to activate' \
+  -e 'tell application "System Events" to tell process "Simulator" to click menu item "Matching Face" of menu 1 of menu item "Face ID" of menu 1 of menu bar item "Features" of menu bar 1'
 ```
 
 `demo` is both a route and a **prefix**: `ORC_SCREEN=demo` lands on the demo
@@ -173,27 +221,30 @@ button, not a second way to pair.
 ios/
 ├── Package.swift              swift test over Sources/Orchestra minus UI
 ├── Orchestra.xcodeproj/       one app target, file-system-synchronised groups
-├── Orchestra-Info.plist       ATS, camera, URL scheme
+├── Orchestra-Info.plist       ATS, camera, photo library, URL scheme
 ├── Orchestra.entitlements     keychain access — see "the second-launch bug"
 ├── App/                       composition + the two views that need UIKit
 │   └── Fonts/                 IBM Plex Mono ×4 + OFL.txt — see below
 └── Sources/Orchestra/
     ├── Model/    Wire · Enums · StreamFrame · Chat · Transcript · Limits
-    │             Pairing
+    │             Pairing · Upload
     ├── API/      OrchestraClient (actor) · EventStream · SSE · Endpoint
     │             TranscriptSource · OrchestraError · Keychain
-    ├── Rules/    Triage · TranscriptRules
+    ├── Rules/    Triage · TranscriptRules · UploadRules
+    ├── Media/    ImagePrep — sniff, downscale, transcode. ImageIO and
+    │             CoreGraphics only, so `swift test` runs the real thing on
+    │             macOS; NOT under UI, because the numbers are a rule
     ├── Format/   RelativeTime · TextRules
     ├── Demo/     DemoClock · DemoFleet · DemoLimits · DemoChat
     │             DemoTranscript · DemoTopology · DemoPayload · DemoCopy
     │             (NOT under UI — it is data and rules, so `swift test`
     │             decodes all of it)
     ├── Store/    FleetStore · FleetApplier · ChatStore · TranscriptStore
-    │             LimitsStore · PairingStore · DraftStore
+    │             LimitsStore · PairingStore · DraftStore · UploadStore
     │                                            (@MainActor @Observable)
     └── UI/       Palette · Typography · StatusStyle · ConnectionBar
                   FleetView · WorktreeDetailView · ChatView · TranscriptView
-                  LimitsView · ServerView · rows
+                  LimitsView · ServerView · ImageAttach · rows
 ```
 
 **IBM Plex Mono is bundled now** — the brand face of the desktop board, not SF
@@ -1356,3 +1407,163 @@ is still the block's own.
   appended was real records with a rewritten `sessionId`, not a live agent
   typing, so the *cadence* under a busy agent (the 5 s branch, the `.gap`
   detection) is still only pinned by tests.
+
+## Phase 7 — a screenshot from the phone lands on the Mac
+
+> *"we should also be able to upload images through the launch and chat
+> dialogues. I often have to send screenshots… the intuitive solution would be to
+> have this file get uploaded to a specific folder on the machine where the
+> orchestra backend is running, and then give the path to that file in the chat.
+> That's how images are usually inserted into Claude sessions — when I drag an
+> image from my desktop into a Claude session in a terminal, it just takes the
+> path of the image."*
+
+The server half shipped first (`orchestra/uploads.py`): `POST /api/v1/uploads`
+takes base64 in a JSON body, sniffs the type from the magic bytes, names the file
+`sha256(bytes)[:16]` and writes it to `~/.orchestra/uploads/<YYYY-MM-DD>/`. This
+is the phone half.
+
+### The path is the attachment, and there is nothing else
+
+**The uploaded path goes into the draft as plain text.** Not an attachment
+object, not a chip carrying a parallel representation. One source of truth, and
+everything falls out of it:
+
+* the draft persistence already stores text, so an attachment survives
+  backgrounding and the Face ID re-lock exactly like the words around it;
+* the send path already types text;
+* Claude Code reads a path off disk, which is what dragging a file into a
+  terminal session does.
+
+The thumbnail strip is therefore **derived by parsing the draft**
+(`Rules/UploadRules.swift` — `UploadPath.paths`), and deleting the path from the
+text deletes the attachment with no bookkeeping anywhere that could disagree. A
+separate attachment model would have needed separate persistence, separate
+serialisation and separate syncing with the text — three new ways to lose the
+user's screenshot.
+
+The tiles are drawn from the **local** image the user picked, cached in memory by
+path (`Store/UploadStore.swift`, twelve entries). A path whose picture is not in
+the cache — a draft restored after a cold launch — draws a plain tile with the
+file's name on it. There is no download route and none was invented.
+
+### The two numbers, and why a screenshot is never resampled
+
+Screenshots are the use case, and the requirement they impose is that 11 pt UI
+text survives the round trip. `Sources/Orchestra/Media/ImagePrep.swift`:
+
+| knob | value | why |
+|---|---|---|
+| `longEdgeCap` | **3024 px** | above *every* current iPhone screenshot's long edge — 2796 (15/17 Pro Max), 2868 (16 Pro Max), 2622 (16 Pro), 2556, 2532 — so a screenshot is never resampled. Resampling is what destroys small text; a cap that sits above the tallest screenshot means the question never arises. A 12 MP camera frame (4032 long) is a scene rather than a screen, and 3024 px still reads a whiteboard |
+| `jpegQuality` | **0.9** | edges on 8-bit type survive; a 3024 px frame lands at ~1–2 MB instead of the ~9 MB a 1.0 baseline encode costs |
+
+**And the format rule, which matters more than either number.** PNG, JPEG, GIF
+and WebP are exactly the four the reader at the far end accepts, so one of those
+that is already inside budget is sent **byte for byte**. An iOS screenshot is a
+PNG, so the primary case never touches a lossy encoder at all. HEIC and HEIF are
+*always* transcoded — that is the whole reason the file exists, since iPhones
+shoot HEIC by default and the server deliberately does not transcode. Anything
+over the cap in pixels or bytes goes down a four-rung ladder until it fits; if
+the bottom rung still does not, it is refused **locally**, with a sentence.
+
+An animated GIF is passed through on its byte budget alone, ignoring the pixel
+cap, and refused rather than shrunk when it does not fit: a transcode would take
+frame zero and silently drop the animation.
+
+### Proven against the real server, 2026-08-06
+
+A 1320×2868 screenshot **of this app's own board**, taken with
+`xcrun simctl io booted screenshot`, uploaded from the simulator's chat composer
+through the live server on `127.0.0.1:4242`:
+
+```
+$ shasum -a 256 /tmp/orc-src-screenshot.png
+e081f7c1df0b35e60352aac458b9cb2d019467c20bae3bc09889f2c54e5d9b05
+
+$ ls -l ~/.orchestra/uploads/2026-08-06/
+-rw-------  1 achill  staff  580735  e081f7c1df0b35e6.png
+
+$ cmp /tmp/orc-src-screenshot.png ~/.orchestra/uploads/2026-08-06/e081f7c1df0b35e6.png
+        # (no output — byte-identical)
+
+$ tail -1 audit.log.jsonl
+{"at": 1786014958.9, "bytes": 580735, "device": "1b98a7ce", "duplicate": false,
+ "event": "upload", "kind": "png", "name": "e081f7c1df0b35e6.png",
+ "peer": "100.113.110.31"}
+```
+
+The filename **is** the digest of the source file, which is the passthrough
+proving itself: the content-addressed name could not match unless the bytes did.
+The path `/Users/achill/.orchestra/uploads/2026-08-06/e081f7c1df0b35e6.png` was
+in the composer's text field a moment later, with a thumbnail above it.
+
+The **transcode** path was driven with a HEIC of the same screenshot
+(`sips -s format heic`). It came back 1320×2868 — the long edge is under the cap,
+so no resample — as a 431,932-byte JPEG. Cropped to the densest small text on the
+board (11 pt IBM Plex Mono pids and paths in `OTHER AGENTS`) and blown up 2× with
+nearest-neighbour, the transcoded JPEG and the original PNG are indistinguishable
+glyph for glyph.
+
+Also driven live: the progress bar (**`uploading 26%`**, from `URLSession`'s own
+`didSendBodyData`, an 8.6 MB PNG through a deliberately rate-limited proxy), and
+a real server refusal shown verbatim — *"the upload could not be written to
+/tmp/orc-scratch-home/.orchestra/uploads/2026-08-06: Not a directory."* — with
+the draft untouched beside it.
+
+### Decisions worth stating
+
+- **No `Idempotency-Key`, deliberately.** The route is absent from
+  `idem.MUTATION_ROUTES` because it does not need one: the filename is the
+  content's own digest, so a retry lands on the same path and writes no second
+  file. That is exactly the property a key would buy, without the server storing
+  a response for an hour. `Endpoint.upload` is therefore **not** built through
+  `Endpoint.mutation`, and `FixesAPITests.mutations()` excludes it by name.
+- **The size is checked before the request, not after.** `UploadBudget` does the
+  server's own arithmetic — `(n + 2) / 3 * 4 + envelope` — and `bodyBytes` is
+  pinned by a test against the actual body `Endpoint.upload` builds. The cap is
+  **13,985,112 bytes** at the default `upload_max_mb: 10`. A 14 MB request is
+  never fired at a Mac over a tunnel to be told 413.
+- **No camera source.** `PhotosPicker` and `.fileImporter` only. A simulator has
+  no camera, so nothing about a camera path could be verified the way the rest of
+  this app is — and leaving it out keeps `NSCameraUsageDescription` true as
+  written (it still only mentions the pairing QR). `NSPhotoLibraryUsageDescription`
+  is new; there is no `NSPhotoLibraryAddUsageDescription` because this app only
+  ever reads a picture, never writes one back.
+- **Demo refuses at the tap**, before a picker opens, in `DemoCopy.refusal`'s own
+  words, with the paperclip still visible — a reviewer is here to see that the app
+  can attach a picture. `UploadStore.attach` refuses too: the control is the
+  courtesy, the store is the guarantee.
+
+### The crash a simulator found
+
+The first real upload took the app down: `EXC_BREAKPOINT` in
+`_StringGuts.validateInclusiveSubscalarIndex_5_7`. SwiftUI's `TextSelection`
+carries a `String.Index`, and a `String.Index` belongs to **the string it was made
+from** — the selection the field reports and the text the binding holds are two
+different values whenever one has moved and the other has not, which is exactly
+what a draft hydrated from `DraftStore` on appear does. Measuring a foreign index
+whose offset is past the end is not a wrong answer, it is a trap.
+
+Comparing indices is safe; measuring is not. `DraftAttachment.caret` bounds-checks
+with comparisons and returns `nil` — *append* — for anything it cannot measure.
+It lives in `Rules/` rather than in the view because a rule that crashed once
+belongs where a test can reach it (`aCaretFromAnotherStringIsNoCaretRatherThanACrash`).
+
+### Not done, and honest about it
+
+- **The caret restore is best effort.** The insert goes in at the caret when
+  SwiftUI reports one, and the selection is written back past what was inserted;
+  but assigning a bound `String` is itself what moves a caret to the end, and
+  whether the write takes is SwiftUI's business. Every path falls back to
+  *append*, which is the behaviour the empty-composer and end-of-text cases —
+  i.e. almost all of them — produce anyway.
+- **The photo library was never picked from by a finger.** `ORC_UPLOAD=photos`
+  presents the system sheet and it was looked at; choosing a real asset, and with
+  it `PhotosPickerItem.loadTransferable` against an iCloud-Photos-optimised
+  original, needs a device.
+- **The camera and a real HEIC off a real sensor.** The HEIC that was transcoded
+  end to end was made with `sips`, not shot by a phone. The brand table
+  (`mif1`-major stills, depth-effect photos) is pinned by tests, not by a camera.
+- **413 and 415 have named sentences but were not driven.** The client's own
+  precheck makes 413 unreachable without a server whose `upload_max_mb` is lower
+  than this build's default, and 415 would be a bug in this build.

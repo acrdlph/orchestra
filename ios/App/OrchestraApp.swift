@@ -80,6 +80,12 @@ final class AppModel {
     /// `@State` in it. A draft held here survives the re-lock; the lock itself is
     /// untouched.
     let drafts: DraftStore
+    /// Images on their way to the Mac. App-level for `drafts`' reason — the lock
+    /// destroys the composer, and an upload in flight (and the small local
+    /// pictures the strip draws) must outlive it. The *attachment itself* needs
+    /// nothing here: it is a path in the draft text, which `DraftStore` already
+    /// persists.
+    let uploads: UploadStore
 
     /// Requested once. Authorization prompts the user, and pairing can happen
     /// after launch, so the push flow is armed both from `start()` and from the
@@ -101,6 +107,7 @@ final class AppModel {
         self.router = router
         self.pushController = PushController(store: push, router: router)
         self.drafts = DraftStore()
+        self.uploads = UploadStore(client: client)
     }
 
     func start() async {
@@ -159,6 +166,28 @@ final class AppModel {
     /// pairing can happen after launch, from the paired view too.
     func ensurePushStarted() {
         guard pairing.isPaired, !pushStarted else { return }
+        #if DEBUG
+        // `ORC_NO_PUSH=1` — the seam that lets a screenshot run see the app.
+        //
+        // **A simulator has no finger for a system alert either.** The very
+        // first paired launch puts SpringBoard's *"orchestra Would Like to Send
+        // You Notifications"* in the middle of the screen, and unlike the app's
+        // own sheets there is no `ORC_SCREEN` that reaches it: `xcrun simctl`
+        // cannot tap, and an accessibility-driven click answers `-25204`
+        // (measured again on 2026-08-06, exactly as `DebugRoute` records). So
+        // every screenshot of a paired screen is taken through a grey alert
+        // covering the middle third — which is where the mission composer's
+        // attachment strip lives.
+        //
+        // It suppresses the ASK and nothing else: registration, the router, the
+        // preferences screen and every other push path are untouched, and a run
+        // without this variable — which is every shipping run and every Release
+        // build — behaves exactly as before.
+        if ProcessInfo.processInfo.environment["ORC_NO_PUSH"] == "1" {
+            pushStarted = true
+            return
+        }
+        #endif
         pushStarted = true
         pushController.start()
         Task {

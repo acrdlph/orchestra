@@ -242,6 +242,10 @@ struct RootView: View {
         // gate tears down, and it is: the environment write lives on the paired
         // tabs, and `AppModel` outlives them.
         .environment(model.drafts)
+        // The upload, delivered exactly the way the drafts are and for the same
+        // two reasons: both composers need it, and neither is a composition
+        // root. Also outside what the gate tears down.
+        .environment(model.uploads)
         // Here rather than in `AppModel.start()`, because pairing can happen
         // AFTER launch: this view appears the moment a token exists, and that is
         // the moment the stream should open.
