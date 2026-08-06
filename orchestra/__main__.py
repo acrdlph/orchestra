@@ -87,6 +87,12 @@ def _maintenance(args):
         for log in disk.own_logs():
             disk.rotate_if_needed(log)
         print(disk.prune_report(disk.prune_logs()))
+        # Uploads too. They are orchestra's own files in exactly the sense the
+        # logs are — written by this program, into a directory it owns — and the
+        # whole point of this flag is "reclaim what you can without touching my
+        # transcripts". `disk_loop` already reaps them on its own cadence; this
+        # is the same reap, on demand, for somebody who wants the space now.
+        print(disk.prune_uploads_report(disk.prune_uploads()))
         return True
     return False
 

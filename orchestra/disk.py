@@ -618,6 +618,18 @@ def prune_report(summary):
             f"7-day floor.")
 
 
+def prune_uploads_report(summary):
+    """The same, for uploads. Its own function rather than a parameter on the
+    one above, because the two floors differ (7 days against 24 hours) and a
+    line that names the wrong one is worse than no line: this is the output
+    somebody reads to decide whether their disk problem is orchestra's doing.
+    MB rather than KB — these are photographs, not log segments."""
+    return (f"orchestra: removed {summary['removed']} expired upload(s), "
+            f"{summary['bytes_freed'] / (1024 * 1024):.1f} MB freed; "
+            f"{summary['kept']} kept, {summary['held_by_floor']} held by the "
+            f"24-hour floor.")
+
+
 def _reset():
     """Tests only: drop the corpus cache between scenarios."""
     with _lock:

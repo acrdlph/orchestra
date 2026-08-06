@@ -488,9 +488,11 @@ def load_config(argv=None):
                          "count, oldest write, free space) and exit. Read-only "
                          "— orchestra never deletes your transcripts")
     ap.add_argument("--prune-logs", action="store_true",
-                    help="rotate and reap ORCHESTRA'S OWN logs (audit.log.jsonl, "
-                         "dispatch.log.jsonl) and exit. Never touches "
-                         "~/.claude*; segments under 7 days old are always kept")
+                    help="rotate and reap everything ORCHESTRA ITSELF owns — its "
+                         "logs (audit.log.jsonl, dispatch.log.jsonl) and expired "
+                         "uploads from the phone — and exit. Never touches "
+                         "~/.claude*; nothing under 7 days (logs) or 24 hours "
+                         "(uploads) is ever removed")
     ap.add_argument("--demo", action="store_true", help="serve fictional demo data (for screenshots)")
     args = ap.parse_args(argv)
 

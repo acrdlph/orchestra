@@ -2230,6 +2230,72 @@ auth, and a genuine `404` for a path outside the segment (`/api/v1/sessionsX/…
 
 ---
 
+### 9.11.2 `POST /api/v1/uploads` — a picture from the phone, as a path on the Mac
+
+**BUILT 2026-08-06** (`orchestra/uploads.py`). Written from the shipped code and driven with
+curl against a live server.
+
+The phone has the screenshot; the agent reads files off the Mac's disk. So the phone uploads
+bytes, the server writes a file, and the response carries the **absolute path** — which the app
+puts into the message text. That is exactly how an image enters a Claude Code session when you
+drag one into a terminal, and it is why this route deliberately does not talk to any model.
+
+**Auth:** the normal guard — loopback trusted, otherwise `Authorization: Bearer orc1_…`.
+**`Content-Type: application/json` is required**, which is why the body is base64 rather than
+multipart: a mutation without that header is `415`, and that is the CSRF guard. Base64 costs 33%
+and keeps the guard intact.
+
+```
+POST /api/v1/uploads
+{ "data": "<base64 of the file's bytes>", "name": "IMG_0421.PNG" }   // `name` is OPTIONAL and IGNORED
+
+200 {"ok": true,
+     "path": "/Users/achill/.orchestra/uploads/2026-08-06/49cecdb07d22dc44.png",
+     "bytes": 78, "kind": "png", "name": "49cecdb07d22dc44.png"}
+200 {"ok": false, "error": "<a sentence written for the person holding the phone>"}
+```
+
+`kind` ∈ `png` · `jpeg` · `gif` · `webp` · `heic` · `heif`. `data` may carry a
+`data:…;base64,` prefix (stripped, its declared type ignored) and may contain line wraps.
+
+**The type is sniffed from magic bytes and the name is never used.** The file is named
+`sha256(bytes)[:16]` plus the sniffed extension, so a client `name` of `../../etc/passwd`, one
+containing a NUL, or one that is a path separator are all equally uninvolved — the classic
+traversal cannot start, because nothing the client sends reaches the filesystem. A refusal names
+what actually arrived (`a zip archive`, `an SVG, which is markup rather than a picture`, `an ISO
+base-media file of brand 'isom' — the MP4/MOV family`).
+
+**Content-addressed, therefore idempotent by construction.** Identical bytes return the identical
+path and write no second file, so a retry is free — which is why this route is deliberately *not*
+in `idem.MUTATION_ROUTES`. A duplicate does touch the file's mtime, restarting its retention
+clock.
+
+**Where the files live, and why it is load-bearing.** `~/.orchestra/uploads/<YYYY-MM-DD>/`,
+`0700` directories and `0600` files — and deliberately **outside every git worktree**, because
+`finish.start_finish(clean_scratch=True)` deletes untracked files in a worktree. An upload living
+next to the work would be destroyed by a closeout, silently, after an agent had been told the
+path. Do not move them for tidiness.
+
+**Caps.** `upload_max_mb` (default 10). The body cap is the base64 of that plus a 4 KB envelope —
+13,985,112 bytes by default — and a body over it is refused **`413` without being read**, so a
+client should check the encoded size before sending. `server.MAX_BODY` remains 256 KB for every
+other route; this route resolves its own cap from the path before the read, so only one of the
+two is ever consulted.
+
+**Retention.** `upload_retain_days` (default 30, `0` = keep forever), reaped by
+`disk.prune_uploads()` on the `disk_loop` cadence and by `--prune-logs` on demand, behind a hard
+**24-hour floor** that outranks any smaller knob. These are orchestra's own files, which is the
+whole reason it may delete them at all — the same distinction `disk.py` draws when it reports on
+the user's transcript corpus and never touches it.
+
+One audit line per upload, carrying the byte count and the kind and never the image.
+
+**Client note:** an iPhone photo is HEIC by default. The server accepts and stores HEIC, but the
+reader at the far end is on firmer ground with JPEG/PNG, and the server does not transcode —
+converting where the pixels already are (on the device) is the app's job.
+
+---
+
 ### 9.12 `POST /api/v1/sessions/{sid}/messages` — send to an agent
 
 **Auth:** Bearer, **`act`**. **Idempotency:** required. **`expect`:** required.
