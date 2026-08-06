@@ -3374,6 +3374,42 @@ phone may be in a different timezone from the Mac.
 
 ---
 
+### 9.25 `POST /api/v1/nodes/snapshot` — a collector's node snapshot
+
+**Built 2026-08-06 (ADR 0016 Phase 1; the shipped route — this section is
+written from the code, not a sketch).** A remote collector — a machine running
+`python3 -m orchestra --collect-to <board-url>`, which listens on nothing —
+POSTs its pre-merge node snapshot here; the board deposits it in the node
+registry (persisted in `nodes.cache.json`), nudges the sweep, and the next
+publish merges it into the one board under `<node>/<worktree>` keys.
+
+**Auth:** Bearer, an ordinary device token (scopes are deferred whole per
+ADR 0014; a dedicated collector credential is Phase 3 hardening).
+**Content-Type:** `application/json`, enforced by the CSRF guard like every
+mutation. **Body cap:** its own — config `node_snapshot_max_mb` (default
+1 MB), not the global 256 KB, for the same reason `/api/v1/uploads` carries
+its own. **No idempotency key:** latest-wins is the route's whole semantics.
+
+```json
+{"node": "work", "label": "Works-MacBook", "state": { …collect_state shape… },
+ "seq": 118, "sent_at": 1786020000.0}
+```
+
+| Status | When |
+|---|---|
+| 200 | deposited — `{"ok": true, "received_at": …}` |
+| 401 / 403 | auth, like every route |
+| 409 | `node_is_self` — the id is the board's own; a remote claiming the local identity is the one collision the qualified key cannot survive |
+| 413 | `too_large` — past `node_snapshot_max_mb` |
+| 422 | `node_invalid` / `state_invalid` |
+
+A node that stops POSTing keeps its cards on the board, dated by
+`freshness["node:<id>"]` (which rides `/api/state` and every frame). Nothing
+here deletes a node — a disappeared card reads as "all clear", the one lie
+the board refuses to tell. See `docs/mobile/NODES.md` §11.
+
+---
+
 ## 10. Enum reference
 
 ### 10.1 `session.status`

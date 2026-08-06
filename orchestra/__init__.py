@@ -27,10 +27,10 @@ script, else cwd) > defaults. See README.md.
 import time                    # unused here, but tests reach time.sleep as
                                # `orchestra.time.sleep` — keep the name bound
 
-from . import (config, node, shell, status, gitrepo, procs, hooks, transcripts,
-               limits, watcher, observer, identity, disk, auth, terminal, chat,
-               sessionlog, finish, dispatch, resume, qr, tailnet, pairing,
-               push, notify, uploads, server)
+from . import (config, node, nodes, shell, status, gitrepo, procs, hooks,
+               transcripts, limits, watcher, observer, collector, identity,
+               disk, auth, terminal, chat, sessionlog, finish, dispatch,
+               resume, qr, tailnet, pairing, push, notify, uploads, server)
 
 # ---- public surface (facade). Re-exported so tests, tools and
 # tests/characterize.py can keep saying `orchestra.<name>`. DEMO,

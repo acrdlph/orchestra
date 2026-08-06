@@ -143,6 +143,9 @@ header .wrap { max-width:none; }
   color:var(--muted); background:var(--bg-2); border:1px solid var(--border-2);
   border-radius:5px; padding:2px 7px; white-space:nowrap; }
 .nodetag::before { content:"⌂ "; color:var(--muted-2); }
+/* a node the board has not heard from: its cards STAY, dated — a disappeared
+   card reads as "all clear", the one lie this board refuses to tell */
+.nodetag.stale { color:var(--yellow); border-color:var(--yellow); border-style:dashed; }
 @keyframes pulse { 50% { box-shadow:0 0 10px var(--accent-glow); } }
 .card-head .procs { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
 .card-head .noproc { color:var(--muted); font-size:var(--fs-xs); }
@@ -392,8 +395,20 @@ const cardKey = (w) => w.node ? `${w.node}/${w.name}` : w.name;
 // More than one machine on the board? Only then do node badges render — a
 // single-machine board must look exactly as it always has (NODES.md §7).
 let multiNode = false;
-const nodeTag = (node) => (multiNode && node)
-  ? ` <span class="nodetag">${esc(node)}</span>` : "";
+// "node:<id>" stamps off the freshness map (NODES.md §11) — when the board
+// last heard each machine. Refreshed per render; the badge goes stale (amber,
+// dashed, with the age spoken) past ~4 heartbeats, and the cards it dates
+// STAY on the board — node-down must never read as all-clear.
+let NODE_AGES = {};
+const NODE_STALE_S = 60;
+const nodeTag = (node) => {
+  if (!multiNode || !node) return "";
+  const at = NODE_AGES[node];
+  const age = at ? Math.max(0, Math.floor(Date.now() / 1000 - at)) : null;
+  if (age != null && age > NODE_STALE_S)
+    return ` <span class="nodetag stale" title="node ${esc(node)} last spoke ${rel(age)} ago — these cards are as of then">${esc(node)} · ${rel(age)}</span>`;
+  return ` <span class="nodetag">${esc(node)}</span>`;
+};
 // display form of a qualified key: the bare name alone on a one-node board
 const keyLabel = (k) => {
   const s = String(k ?? "");
@@ -543,6 +558,9 @@ function render(st) {
   const now = st.generated_at;
   $("brandUser").textContent = `${st.user || "you"}@fleet`;
   multiNode = Object.keys(st.nodes || {}).length > 1;
+  NODE_AGES = {};
+  for (const k in (st.freshness || {}))
+    if (k.startsWith("node:")) NODE_AGES[k.slice(5)] = st.freshness[k];
   SCHED = st.resumes || {};
   // `wt` is the card KEY — the string every POST body and registry uses —
   // and `name`/`node` ride for display. SCHED's keys arrive qualified from

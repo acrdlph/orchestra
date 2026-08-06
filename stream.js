@@ -53,6 +53,7 @@
     this.counts = {};
     this.other = [];
     this.nodes = {};      // node id -> {label, hostname, user}; every frame
+    this.freshness = {};  // probe ages + "node:<id>" stamps; never bumps
     this.at = null;
   };
 
@@ -103,6 +104,10 @@
     // appear with zero cards, and a board must be able to name every node its
     // cards reference (docs/mobile/NODES.md §6)
     this.nodes = f.nodes || {};
+    // and the no-bump map that DATES each node's cards ("node:<id>" keys,
+    // NODES.md §11) — a dark node stays on the board with a stated age,
+    // which is only possible if the age actually reaches the page
+    this.freshness = f.freshness || {};
     this.at = f.at;
     this.v = f.v;
     return "applied";
@@ -123,6 +128,7 @@
     this.counts = d.counts || {};
     this.other = d.other_procs || [];
     this.nodes = d.nodes || {};
+    this.freshness = d.freshness || {};
     this.at = d.generated_at;
     this.v = null;
   };
@@ -155,6 +161,7 @@
       free_worktrees: free,
       worktrees: wts,
       nodes: this.nodes,
+      freshness: this.freshness,
       other_procs: this.other,
       resumes: side.resumes || {},
     };

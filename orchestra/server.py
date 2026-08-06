@@ -45,8 +45,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (config, auth, gitrepo, limits, node, observer, terminal, chat,
-               dispatch, resume, finish, pairing, tailnet, notify, idem,
+from . import (config, auth, gitrepo, limits, node, nodes, observer, terminal,
+               chat, dispatch, resume, finish, pairing, tailnet, notify, idem,
                sessionlog, uploads)
 
 MAX_SUBSCRIBERS = 32        # concurrent SSE streams; config key "sse_max_subscribers"
@@ -404,9 +404,13 @@ class Handler(BaseHTTPRequestHandler):
                                    "api": "1.0", "time": time.time()}).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/state"):
-                # schedules ride along so the board needs no second fetch
+                # schedules ride along so the board needs no second fetch;
+                # freshness rides so a POLLING client can date each node's
+                # cards — the stream always carried it, and node-down honesty
+                # (NODES.md §11) must not require a stream
                 body = json.dumps({**observer.cached_state(),
-                                   "resumes": resume.resume_public()}).encode()
+                                   "resumes": resume.resume_public(),
+                                   "freshness": observer.freshness()}).encode()
                 ctype = "application/json"
             elif self.path.startswith("/api/focus"):
                 q = _query(self.path)
@@ -787,7 +791,17 @@ class Handler(BaseHTTPRequestHandler):
         # (`uploads.max_body()`, ~13.3 MB at the default 10 MB knob), and the
         # two never fight: exactly one of them is consulted per request.
         route = self.path.split("?", 1)[0]
-        cap = uploads.max_body() if route == "/api/v1/uploads" else MAX_BODY
+        if route == "/api/v1/uploads":
+            cap = uploads.max_body()
+        elif route == "/api/v1/nodes/snapshot":
+            # A node snapshot is ~38 KB on a nine-worktree fleet; the global
+            # cap would silently strand a fifty-worktree machine, and raising
+            # the global for one route puts the whole surface behind it —
+            # the uploads rule, applied a second time (NODES.md §11).
+            cap = int(float(config.CFG.get("node_snapshot_max_mb", 1.0))
+                      * 1024 * 1024)
+        else:
+            cap = MAX_BODY
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -893,6 +907,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, uploads.receive(
                     payload, device=(dev or {}).get("id"),
                     peer=self.client_address[0] if self.client_address else ""))
+            if route == "/api/v1/nodes/snapshot":
+                # ADR 0016 Phase 1: a remote collector's node snapshot. The
+                # DOOR is where a bad identity is refused — an id that cannot
+                # key cards (422), or the board's own id (409: a remote
+                # claiming the local identity is the one collision the
+                # qualified key cannot survive). Latest-wins by nature, so no
+                # idempotency key; auth is `parse_request` like every route —
+                # the collector presents an ordinary device token. The nudge
+                # is what puts the deposit on the board within a hot sweep
+                # rather than up to idle_s later; `git=False` because a
+                # remote snapshot says nothing about THIS machine's repos.
+                refusal = nodes.deposit(
+                    payload.get("node"), payload.get("state"),
+                    label=payload.get("label"), seq=payload.get("seq"),
+                    sent_at=payload.get("sent_at"), received_at=time.time())
+                if refusal:
+                    st = 409 if refusal["error"] == "node_is_self" else 422
+                    return self._json(st, refusal)
+                observer.nudge(f"node:{payload.get('node')}", git=False)
+                return self._json(200, {"ok": True, "received_at": time.time()})
             if auth.admin("POST", route):
                 # `/api/v1/devices/<id>/revoke`. Parsed rather than matched so the
                 # path shape is API.md §2.5's, which is what the Swift client and

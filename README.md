@@ -321,6 +321,9 @@ provider token with `403 InvalidProviderToken`.
 |---|---|---|
 | `roots` | `[cwd]` | dirs whose git-repo children are watched |
 | `node` | `""` | this machine's node id — cards key as `<node>/<worktree>` so one board can watch several machines (ADR 0016). Empty mints a stable id once (`node.json`); set it only for taste (`"work"`). Lowercase letters, digits, `-` |
+| `collect_token` | `""` | collector mode's credential — a device token minted on the **board** with `--add-device`. In the config file, never on argv (`ps` prints argv) |
+| `collect_heartbeat_s` | `15.0` | how often a collector re-posts an unchanged snapshot. Node-down detection on the board is only as honest as this proof-of-life cadence |
+| `node_snapshot_max_mb` | `1.0` | the ingest route's own body cap — a snapshot is ~38 KB on nine worktrees, and the global 256 KB cap would strand a fifty-worktree machine |
 | `pattern` | `""` | regex filter on worktree dir names |
 | `homes` | `[]` | Claude home dirs; `[]` auto-discovers `~/.claude*` |
 | `host` / `port` | `127.0.0.1` / `4242` | the board serves your transcript text. Off loopback it refuses to start until a device is registered (`--add-device`), and refuses `0.0.0.0` outright |
@@ -524,6 +527,30 @@ rotation never looks like a wiped history.
   prefix, longest prefix wins (`myapp` doesn't swallow `myapp-audit`).
 - **Terminal actuation** — tmux targets are resolved by walking process
   ancestry to the owning pane; Terminal.app/iTerm2 tabs are matched by tty.
+
+## A second machine (read-only)
+
+One board can watch several machines (ADR 0016). Each machine runs a
+**collector**: the same watcher, which **dials out and listens on nothing** —
+no port, no firewall exception, nothing reachable on the work machine. Cards
+merge onto the one board keyed `<node>/<worktree>`, so two machines can both
+have a `ConfidAI` and the board keeps them apart. A collector that goes quiet
+leaves its cards **on the board, dated** ("⌂ work · 4m") — a disappeared card
+would read as *all clear*, which is the one lie this board refuses to tell.
+
+```bash
+# on the BOARD machine — mint the collector's credential
+python3 -m orchestra --add-device "collector work"
+
+# on the WORK machine — orchestra.config.json:
+#   {"node": "work", "roots": ["/path/to/code"], "collect_token": "orc1_…"}
+python3 -m orchestra --collect-to http://100.x.y.z:4242
+```
+
+Phase 1 is deliberately **read-only**: the board shows the work machine's
+agents but every button that types at them still works only for the board's
+own node. Driving a remote agent is the command channel (ADR 0016 Phase 2),
+which has its own security questions — see `docs/mobile/NODES.md`.
 
 ## Tests
 

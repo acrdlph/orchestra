@@ -55,8 +55,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 
-from . import (config, gitrepo, hooks as hooks_mod, node, procs, transcripts,
-               status, limits, watcher)
+from . import (config, gitrepo, hooks as hooks_mod, node, nodes, procs,
+               transcripts, status, limits, watcher)
 
 STATE_TTL_S = 4.0              # cache collector output between requests
 _cache = {"t": 0.0, "state": None}
@@ -358,15 +358,23 @@ def merge_nodes(snaps):
 
 
 def board_state(local_state):
-    """One local snapshot, merged as the board (Phase 0's built-in collector).
+    """The local snapshot plus every remote collector's, merged as the board.
 
-    Phase 1 adds the remote nodes' snapshots to the dict below; nothing else
-    here changes, which is the point of the seam. Top-level `hostname`/`user`
-    keep their historical meaning — THE BOARD HOST, constant for the life of
-    the process (the side-fetch contract in stream.js/FleetSide) — and the
-    board host is by definition the machine the local collector watches.
+    Phase 0 built the seam with the remote dict empty; Phase 1 fills it from
+    `nodes.remote_states()` — the registry the ingest route deposits into —
+    and nothing else changed, which was the point of the seam. Top-level
+    `hostname`/`user` keep their historical meaning — THE BOARD HOST, constant
+    for the life of the process (the side-fetch contract in stream.js/
+    FleetSide) — and the board host is by definition the machine the local
+    collector watches.
+
+    The pop is defense in depth, not a code path: `nodes.deposit` already
+    refuses the board's own id, so an entry under it can only mean a bug or
+    a tampered cache file — and the LOCAL collector must win over either.
     """
-    merged = merge_nodes({node.node_id(): local_state})
+    remote = nodes.remote_states()
+    remote.pop(node.node_id(), None)
+    merged = merge_nodes({node.node_id(): local_state, **remote})
     merged["hostname"] = local_state.get("hostname") or ""
     merged["user"] = local_state.get("user") or ""
     # The board's OWN node id, so a client can tell local from remote without
@@ -375,6 +383,24 @@ def board_state(local_state):
     # offer it (pids are node-local hints, ADR 0016).
     merged["node"] = node.node_id()
     return merged
+
+
+def _stamp_node_freshness(fresh, local_state):
+    """`fresh["node:<id>"]` — when the board last heard each node.
+
+    On the NO-BUMP path deliberately (NODES.md §3): recency that moved on
+    every heartbeat inside the bump-term `nodes` map would spin the version
+    forever, and `freshness` already exists to say "how old is what you see"
+    without saying "something changed". The local node's stamp is its own
+    collect clock, so the key space is uniform — a client reads one map for
+    every machine on the board.
+    """
+    if fresh is None:
+        return
+    fresh[f"node:{node.node_id()}"] = (local_state.get("generated_at")
+                                       or time.time())
+    for nid, at in nodes.ages().items():
+        fresh[f"node:{nid}"] = at
 
 
 # ------------------------------------------------------- the publish point
@@ -896,6 +922,7 @@ class Observer:
         self._nudges = 0
         self._nudge_reason = None
         self._logged_error_at = 0.0
+        self._local_snap = None     # the pre-merge node snapshot; NODES.md §11
         # The watcher is built here and started in `start()`, so an Observer
         # that is only ever `publish()`ed into — which is most of the suite —
         # opens no file descriptors at all.
@@ -1049,9 +1076,14 @@ class Observer:
             # POST that has to wait for this sweep's lock is an AGENT that has
             # to wait for it.
             hooks=self._hooks.live(started))
+        # The pre-merge node snapshot is what the collector's dial-out loop
+        # ships (NODES.md §11) — settled by this sweep's own Settler, never
+        # the merged board (a collector must not re-export other nodes).
+        self._local_snap = state
         # The node snapshot becomes the board here — one built-in local
-        # collector through the same merge N remote ones will use (ADR 0016).
+        # collector through the same merge N remote ones use (ADR 0016).
         state = board_state(state)
+        _stamp_node_freshness(fresh, self._local_snap)
         ms = (time.perf_counter() - t0) * 1000.0
         self._sweeps += 1
         # Every memo's and cadence's disagreement with the cold recompute,
@@ -1471,6 +1503,24 @@ def hook(sid, event, at=None, notification_type=None):
         _observer.hook(sid, event, at, notification_type=notification_type)
 
 
+def freshness():
+    """The publish point's freshness map, copied — `{kind: epoch}` plus the
+    per-node `node:<id>` stamps (NODES.md §11).
+
+    The node stamps are overlaid from the registry DIRECTLY, not only from
+    the sweep's map: node-down honesty must not depend on the sweep thread —
+    a board running in the documented rollback (no `start_observer`) still
+    merges remote cards on every request, and cards it serves it must date.
+    The local node's stamp falls back to the cache clock, which is when the
+    state being served was actually collected.
+    """
+    out = dict(_observer._fresh) if _observer is not None else {}
+    for nid, at in nodes.ages().items():
+        out[f"node:{nid}"] = at
+    out.setdefault(f"node:{node.node_id()}", _cache["t"] or time.time())
+    return out
+
+
 def hook_stats():
     """The edge counters, for `/api/health`-adjacent diagnostics."""
     return _observer._hooks.stats() if _observer is not None else \
@@ -1613,7 +1663,9 @@ def cached_state():
         # The same board composition the sweep applies — the request path must
         # serve the shape the frames carry, or a seeded client and a streaming
         # one would disagree about what a card is even called.
-        state = board_state(state)
+        local = state
+        state = board_state(local)
+        _stamp_node_freshness(fresh, local)
         # Compare-and-swap, never a blind write — the same guard the sweep
         # keeps (`Observer.sweep`). A mutation that parked `_cache["t"] = 0.0`
         # while this collect was in flight means the state just collected

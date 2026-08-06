@@ -302,7 +302,7 @@ class StreamJS(unittest.TestCase):
         st = got[0]["state"]
         self.assertEqual(set(st), {"generated_at", "hostname", "user", "counts",
                                    "free_worktrees", "worktrees", "other_procs",
-                                   "nodes", "resumes"})
+                                   "nodes", "freshness", "resumes"})
         self.assertEqual(st["free_worktrees"], ["n1/gamma"])
         self.assertEqual(st["generated_at"], 1000.0)
 
