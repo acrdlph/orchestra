@@ -394,6 +394,22 @@ CFG = {
     "disk_free_gb": 10.0,      # …or once the filesystem holding it has less free
     "log_max_mb": 8.0,         # rotate orchestra's OWN logs past this (~170x today's)
     "log_keep": 5,             # rotated segments kept — but the 7-day floor outranks it
+    # Uploads (uploads.py). `POST /api/v1/uploads` writes an image from the
+    # phone to `~/.orchestra/uploads/<YYYY-MM-DD>/` and answers with its
+    # absolute path, which the app pastes into the message — a path is the only
+    # way to hand an agent a picture.
+    #
+    # These files ARE orchestra's, which is what makes reaping them a different
+    # act from touching a transcript: this program chose the directory, chose
+    # the name and wrote the bytes. So they age out, and the two knobs are the
+    # size of one image and the life of all of them. 10 MB takes any iPhone
+    # screenshot and any HEIC photo; 30 days is long past the life of the
+    # conversation the path was pasted into. `upload_retain_days: 0` means keep
+    # them forever, and a 24-hour floor in `disk.py` outranks any smaller
+    # number — a path handed to an agent this morning must still be there this
+    # afternoon.
+    "upload_max_mb": 10.0,     # the largest ONE image the upload route writes
+    "upload_retain_days": 30,  # …and how long it is kept; 0 keeps them forever
     "apns_key_path": "",       # the .p8 auth key downloaded from Apple
     "apns_key_id": "",         # the 10-char Key ID shown beside the key
     "apns_team_id": "",        # the 10-char Team ID (top-right of the portal)

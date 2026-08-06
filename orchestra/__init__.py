@@ -30,7 +30,7 @@ import time                    # unused here, but tests reach time.sleep as
 from . import (config, shell, status, gitrepo, procs, hooks, transcripts,
                limits, watcher, observer, identity, disk, auth, terminal, chat,
                sessionlog, finish, dispatch, resume, qr, tailnet, pairing,
-               push, notify, server)
+               push, notify, uploads, server)
 
 # ---- public surface (facade). Re-exported so tests, tools and
 # tests/characterize.py can keep saying `orchestra.<name>`. DEMO,
@@ -76,13 +76,22 @@ from .observer import (collect_state, cached_state, demo_state, _cache,
 # read as anything at the top level, and the two codes are what callers branch
 # on. Reach the function as `orchestra.identity.resolve`.
 from .identity import GONE, UNADDRESSED, ADDRESSES
-# `corpus`, `report`, `segments` and `prune_logs` are deliberately NOT
-# re-exported: at the top level every one of them reads as being about the
-# fleet rather than about this machine's disk, and `prune_logs` in particular
-# must be unmistakable at its call site — it is the only thing in orchestra
-# that unlinks a file. Reach them as `orchestra.disk.prune_logs`.
+# `corpus`, `report`, `segments`, `prune_logs` and `prune_uploads` are
+# deliberately NOT re-exported: at the top level every one of them reads as
+# being about the fleet rather than about this machine's disk, and the two
+# prunes in particular must be unmistakable at their call sites — they are the
+# only things in orchestra that unlink a file. Reach them as
+# `orchestra.disk.prune_logs`.
 from .disk import (rotate_if_needed, tail_lines, disk_loop, own_logs,
-                   LOG_MAX_MB, LOG_KEEP, PRUNE_FLOOR_S, CORPUS_TTL_S)
+                   LOG_MAX_MB, LOG_KEEP, PRUNE_FLOOR_S, UPLOAD_FLOOR_S,
+                   CORPUS_TTL_S)
+# `uploads` re-exports NOTHING, and that is the whole of the rule this file has
+# been applying one name at a time: `receive`, `sniff`, `describe`, `max_bytes`
+# and `KINDS` each read as something else entirely at the top level of a
+# program about agents, and `MAX_MB`/`RETAIN_DAYS` do not say max what. Reach
+# every one of them as `orchestra.uploads.receive`. `UPLOAD_ROOT` would be
+# absent regardless — it is rebound at runtime (the tests point it at a
+# tmpdir), which is the RESUME_STATE reason at the top of this file.
 # `check`, `exempt`, `audit` and `public` are deliberately NOT re-exported —
 # every one of them reads as something else at the top level, and `check` in
 # particular must be unmistakable at its call site. Reach them as
